@@ -18,13 +18,17 @@ class SimpleCNN(nn.Module):
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, 10)
 
-    def forward(self, x):
+    def forward(self, x, ext=False):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = x.view(-1, 16 * 5 * 5)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
+        if ext:
+            hooked = x
         x = self.fc3(x)
+        if ext:
+            return x, hooked
         return x
 
 
@@ -57,7 +61,11 @@ class ActiveLearningBench:
         self.labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=self.labelled_sampler, num_workers=2)
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set, batch_size=100, num_workers=2)
+        self.no_grad_batch_size = 100
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set, batch_size=self.no_grad_batch_size, num_workers=2)
+        seq_sampler = torch.utils.data.SequentialSampler(self.training_set)
+        self.seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.no_grad_batch_size, sampler=seq_sampler,
+                                                      num_workers=2)
 
     def train(self):
         print("Training on %d samples." % self.labelled_idx.shape[0])
@@ -110,11 +118,52 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=self.labelled_sampler, num_workers=2)
 
+    def create_vector_rep(self):
+        print("creating vector representation of training set")
+        with torch.no_grad():
+            vector_map = dict()
+            for i, sample in enumerate(self.seq_data_loader, 0):
+                image, label = sample[0].to(self.device), sample[1].to(self.device)
+                out, activations = self.model(image, True)
+                np_activations = activations.to("cpu").numpy()
+                for j in range(out.size()[0]):
+                    entry = {"loss": self.criterion(out[j].unsqueeze(0), label[j].unsqueeze(0)).to("cpu").numpy(), "vector": np_activations[j], "labelled": False}
+                    vector_map[i*self.no_grad_batch_size+j] = entry
+            for idx in self.labelled_idx:
+                vector_map[idx]["labelled"] = True
+            return vector_map
+
     def run(self):
         for i in range(self.iterations):
             self.train()
             self.test()
+            self.create_vector_rep()
             self.__getattribute__(self.sampling_strategy)()
+
+    def test_data_loaders(self):
+        seq_sampler = torch.utils.data.SequentialSampler(self.training_set)
+        seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=2, sampler=seq_sampler, num_workers=2)
+        for i, sample in enumerate(seq_data_loader, 0):
+            loader = sample
+            direct = self.training_set.data[2*i]
+            direct2 =self.training_set.data[2*i+1]
+            direct = self.data_transform(direct)
+            direct2 = self.data_transform(direct2)
+            print(loader[0][0])
+            print("%%%%")
+            print(loader[0][1])
+            print(loader[0].size())
+            print("_")
+            print(len(direct))
+            print(direct[0].size())
+            print(direct[0][0])
+            print(direct[1][0])
+            print(direct[2][0])
+            print("####")
+            print(direct2[0][0])
+            print(direct2[1][0])
+            print(direct2[2][0])
+            print("=================")
 
 
 if __name__ == '__main__':
