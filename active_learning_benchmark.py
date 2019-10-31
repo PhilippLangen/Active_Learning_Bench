@@ -6,9 +6,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
+import sklearn.preprocessing
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 
 class SimpleCNN(nn.Module):
+    """
+    Simple CNN network
+    """
     def __init__(self):
         super(SimpleCNN, self).__init__()
         self.conv1 = nn.Conv2d(3, 6, 5)
@@ -24,6 +30,7 @@ class SimpleCNN(nn.Module):
         x = x.view(-1, 16 * 5 * 5)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
+        # relu activation of fc2 is used for vector representation
         if ext:
             hooked = x
         x = self.fc3(x)
@@ -41,6 +48,9 @@ class ActiveLearningBench:
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=args.learning_rate, momentum=0.9)
         if not os.path.isdir('./datasets'):
             os.mkdir('./datasets')
+        if not os.path.isdir('./plots'):
+            os.mkdir('./plots')
+        # normalize data with mean/std of dataset
         self.data_transform = transforms.Compose([transforms.ToTensor(),
                                                   transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
                                                                        (0.24703223, 0.24348513, 0.26158784))])
@@ -53,21 +63,33 @@ class ActiveLearningBench:
         self.batch_size = args.batch_size
         self.epochs = args.epochs
         self.budget = args.budget
+        # make sure we don't keep iterating if we run out of samples
         self.iterations = min(args.iterations,
                               int((len(self.training_set.data)-self.initial_training_size) / self.budget))
+        # keep track of dataset indices and which samples have already been labelled
         self.unlabelled_idx = np.arange(0, self.training_set.data.shape[0])
+        # pick initial labelled indices
         self.labelled_idx = np.random.choice(self.unlabelled_idx, self.initial_training_size, replace=False)
         self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, self.labelled_idx)
-        self.labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
-        self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
-                                                        sampler=self.labelled_sampler, num_workers=2)
-        self.no_grad_batch_size = 100
-        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set, batch_size=self.no_grad_batch_size, num_workers=2)
+        # training sampler only samples out of labelled idx
+        labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
+        self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set,
+                                                        batch_size=self.batch_size,
+                                                        sampler=labelled_sampler, num_workers=2)
+        self.no_grad_batch_size = 100   # How many samples are simultaneously processed during testing/act extraction
+        self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set,
+                                                       batch_size=self.no_grad_batch_size,
+                                                       num_workers=2)
+        # for extraction order of samples needs to be preserved
         seq_sampler = torch.utils.data.SequentialSampler(self.training_set)
-        self.seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.no_grad_batch_size, sampler=seq_sampler,
-                                                      num_workers=2)
+        self.seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set,
+                                                           batch_size=self.no_grad_batch_size,
+                                                           sampler=seq_sampler, num_workers=2)
 
     def train(self):
+        """
+        main training loop
+        """
         print("Training on %d samples." % self.labelled_idx.shape[0])
         for epoch in range(self.epochs):  # loop over the dataset multiple times
 
@@ -93,6 +115,10 @@ class ActiveLearningBench:
                     running_loss = 0.0
 
     def test(self):
+        """
+        testing loop
+        :return: accuracy
+        """
         correct = 0
         total = 0
         with torch.no_grad():
@@ -108,62 +134,109 @@ class ActiveLearningBench:
         return correct/total
 
     def random_sampling(self):
+        """
+        random sampling strategy
+        :return: new samples for labelling
+        """
         added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False)
-        self.update_train_loader(added_samples)
+        return added_samples
 
     def update_train_loader(self, added_samples):
+        """
+        update idx lists and create updated training data loader
+        :param added_samples:
+        :return:
+        """
+        # remove from unlabelled_idx
         self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, added_samples)
+        # add to labelled_idx
         self.labelled_idx = np.append(self.labelled_idx, added_samples)
-        self.labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
+        # update data loader
+        labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
-                                                        sampler=self.labelled_sampler, num_workers=2)
+                                                        sampler=labelled_sampler, num_workers=2)
 
     def create_vector_rep(self):
+        """
+        extract activations add target layer, order of samples is preserved
+        :return: target activations and loss for each sample
+        """
         print("creating vector representation of training set")
         with torch.no_grad():
-            vector_map = dict()
+            # initialize containers for data
+            activation_all = torch.empty(size=(0, 84), device=self.device) ###todo infer 84 from model
+            loss_all = torch.empty(size=(len(self.training_set.data), 1), device=self.device)
+            # iterate over entire dataset in order
             for i, sample in enumerate(self.seq_data_loader, 0):
                 image, label = sample[0].to(self.device), sample[1].to(self.device)
+                # infer activations using modified forward function
+                # target layer is currently hard coded in model
                 out, activations = self.model(image, True)
-                np_activations = activations.to("cpu").numpy()
+                # gather activations
+                activation_all = torch.cat((activation_all, activations), 0)
                 for j in range(out.size()[0]):
-                    entry = {"loss": self.criterion(out[j].unsqueeze(0), label[j].unsqueeze(0)).to("cpu").numpy(), "vector": np_activations[j], "labelled": False}
-                    vector_map[i*self.no_grad_batch_size+j] = entry
-            for idx in self.labelled_idx:
-                vector_map[idx]["labelled"] = True
-            return vector_map
+                    # force loss_fn to calculate for each sample separately
+                    loss_all[i*self.no_grad_batch_size+j] = self.criterion(out[j].unsqueeze(0), label[j].unsqueeze(0))
+
+        return activation_all, loss_all
+
+    def visualize(self, activations, loss, iteration):
+        """
+        toy visualization example. Force activation data into 2-D using PCA. Visualize fraction of labelled/unlabelled
+        data. Loss as blob size. Not very meaningful, just to get an idea, what can be done.
+        :param activations:
+        :param loss:
+        :param iteration:
+        :return:
+        """
+        np_act = activations.to("cpu").numpy()
+        loss = loss.to("cpu").numpy()
+        # l2 normalize each feature of activations
+        act_norm = sklearn.preprocessing.normalize(np_act, axis=0)
+        # perform pca, allow 2 principal components
+        pca = PCA(n_components=2)
+        principal_components = pca.fit_transform(act_norm)
+        # ratio of samples we actually visualize so it is not overloaded
+        vis_split = 0.02
+        # randomly choose subset of labelled/unlabelled data
+        labelled_vis_idx = np.random.choice(self.labelled_idx,
+                                            int(len(self.labelled_idx)*vis_split), replace=False)
+        unlabelled_vis_idx = np.random.choice(self.unlabelled_idx,
+                                              int(len(self.unlabelled_idx) * vis_split), replace=False)
+        # get pca/ loss data from selected samples
+        labelled_vec = principal_components[labelled_vis_idx]
+        labelled_loss = loss[labelled_vis_idx]
+        unlabelled_vec = principal_components[unlabelled_vis_idx]
+        unlabelled_loss = loss[unlabelled_vis_idx]
+        # change shape x,2 -> 2,x for scatter syntax
+        labelled_vec = np.swapaxes(labelled_vec, 0, 1)
+        unlabelled_vec = np.swapaxes(unlabelled_vec, 0, 1)
+        # scatter plot, user loss as size
+        fig, ax = plt.subplots()
+        ax.scatter(unlabelled_vec[0], unlabelled_vec[1], c="grey", s=unlabelled_loss*10, alpha=0.5)
+        ax.scatter(labelled_vec[0], labelled_vec[1], c="b", s=labelled_loss*10, alpha=0.5)
+        plt.savefig("./plots/%s.png" % iteration, bbox_inches='tight')
+        plt.close(fig)
 
     def run(self):
+        """
+        run program
+        :return:
+        """
+        # main loop
         for i in range(self.iterations):
+            # update model
             self.train()
+            # benchmark
             self.test()
-            self.create_vector_rep()
-            self.__getattribute__(self.sampling_strategy)()
+            # get vec representation
+            act, loss = self.create_vector_rep()
+            self.visualize(act, loss, i)
+            # use selected sampling strategy
+            added_samples = self.__getattribute__(self.sampling_strategy)()
+            # add samples to labelled_idx
+            self.update_train_loader(added_samples)
 
-    def test_data_loaders(self):
-        seq_sampler = torch.utils.data.SequentialSampler(self.training_set)
-        seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=2, sampler=seq_sampler, num_workers=2)
-        for i, sample in enumerate(seq_data_loader, 0):
-            loader = sample
-            direct = self.training_set.data[2*i]
-            direct2 =self.training_set.data[2*i+1]
-            direct = self.data_transform(direct)
-            direct2 = self.data_transform(direct2)
-            print(loader[0][0])
-            print("%%%%")
-            print(loader[0][1])
-            print(loader[0].size())
-            print("_")
-            print(len(direct))
-            print(direct[0].size())
-            print(direct[0][0])
-            print(direct[1][0])
-            print(direct[2][0])
-            print("####")
-            print(direct2[0][0])
-            print(direct2[1][0])
-            print(direct2[2][0])
-            print("=================")
 
 
 if __name__ == '__main__':
