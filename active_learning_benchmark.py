@@ -24,19 +24,31 @@ class SimpleCNN(nn.Module):
         self.fc2 = nn.Linear(120, 84)
         self.fc3 = nn.Linear(84, 10)
 
-    def forward(self, x, ext=False):
+    def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = x.view(-1, 16 * 5 * 5)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        # relu activation of fc2 is used for vector representation
-        if ext:
-            hooked = x
         x = self.fc3(x)
-        if ext:
-            return x, hooked
         return x
+
+
+class Hook:
+    """
+    Utility class for forward hook
+    """
+    def __init__(self, module):
+        self.hook = module.register_forward_hook(self.hook_fn)
+        self.input = None
+        self.output = None
+
+    def hook_fn(self, module, input, output):
+        self.input = input
+        self.output = output
+
+    def close(self):
+        self.hook.remove()
 
 
 class ActiveLearningBench:
@@ -63,6 +75,7 @@ class ActiveLearningBench:
         self.batch_size = args.batch_size
         self.epochs = args.epochs
         self.budget = args.budget
+        self.target_layer = args.target_layer
         # make sure we don't keep iterating if we run out of samples
         self.iterations = min(args.iterations,
                               int((len(self.training_set.data)-self.initial_training_size) / self.budget))
@@ -161,23 +174,30 @@ class ActiveLearningBench:
         extract activations add target layer, order of samples is preserved
         :return: target activations and loss for each sample
         """
+        hook = None
+        num_features = 0
+        # install forward hook
+        for i, layer in enumerate(self.model._modules.items()):
+            if i == self.target_layer:
+                num_features = layer[1].out_features
+                hook = Hook(layer[1])
         print("creating vector representation of training set")
         with torch.no_grad():
             # initialize containers for data
-            activation_all = torch.empty(size=(0, 84), device=self.device) ###todo infer 84 from model
+            activation_all = torch.empty(size=(0, num_features), device=self.device)
             loss_all = torch.empty(size=(len(self.training_set.data), 1), device=self.device)
             # iterate over entire dataset in order
             for i, sample in enumerate(self.seq_data_loader, 0):
                 image, label = sample[0].to(self.device), sample[1].to(self.device)
-                # infer activations using modified forward function
-                # target layer is currently hard coded in model
-                out, activations = self.model(image, True)
+                # run forward, get activations from forward hook
+                out = self.model(image)
+                activations = hook.output
                 # gather activations
                 activation_all = torch.cat((activation_all, activations), 0)
                 for j in range(out.size()[0]):
                     # force loss_fn to calculate for each sample separately
                     loss_all[i*self.no_grad_batch_size+j] = self.criterion(out[j].unsqueeze(0), label[j].unsqueeze(0))
-
+        hook.close()
         return activation_all, loss_all
 
     def visualize(self, activations, loss, iteration):
@@ -238,7 +258,6 @@ class ActiveLearningBench:
             self.update_train_loader(added_samples)
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-epochs', default=5, type=int, help="number of epochs to train")
@@ -246,6 +265,7 @@ if __name__ == '__main__':
     parser.add_argument('-lr', '--learning_rate', default=0.001, type=float, help="learning rate")
     parser.add_argument('-init_size', '--initial_training_size', default=10000, type=int,
                         help="initial number of labelled training samples")
+    parser.add_argument('-target_layer', default=4, type=int, help="layer where activations are extracted")
     parser.add_argument('-budget', default=1000, type=int,
                         help="number of samples added after each active learning iteration")
     parser.add_argument('-iterations', default=40, type=int,
