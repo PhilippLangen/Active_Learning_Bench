@@ -1,14 +1,16 @@
 import argparse
+import json
 import os
+
+import matplotlib.pyplot as plt
 import numpy as np
+import sklearn.preprocessing
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-import sklearn.preprocessing
 from sklearn.decomposition import PCA
-import matplotlib.pyplot as plt
 
 
 class SimpleCNN(nn.Module):
@@ -62,6 +64,13 @@ class ActiveLearningBench:
             os.mkdir('./datasets')
         if not os.path.isdir('./plots'):
             os.mkdir('./plots')
+        if not os.path.isdir('./logs'):
+            os.mkdir('./logs')
+        self.filepath = os.path.join('./logs', args.logfile + '.json')
+        i = 0
+        while os.path.isfile(self.filepath):
+            self.filepath = os.path.join('./logs', args.logfile + str(i) + '.json')
+            i += 1
         # normalize data with mean/std of dataset
         self.data_transform = transforms.Compose([transforms.ToTensor(),
                                                   transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
@@ -243,12 +252,13 @@ class ActiveLearningBench:
         run program
         :return:
         """
+        results = list()
         # main loop
         for i in range(self.iterations):
             # update model
             self.train()
             # benchmark
-            self.test()
+            results.append(self.test())
             # get vec representation
             act, loss = self.create_vector_rep()
             self.visualize(act, loss, i)
@@ -256,6 +266,12 @@ class ActiveLearningBench:
             added_samples = self.__getattribute__(self.sampling_strategy)()
             # add samples to labelled_idx
             self.update_train_loader(added_samples)
+
+        log = {'Strategy': self.sampling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
+               'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results}
+        with open(self.filepath, 'w', encoding='utf-8') as file:
+            json.dump(log, file, ensure_ascii=False)
+            file.close()
 
 
 if __name__ == '__main__':
@@ -272,7 +288,7 @@ if __name__ == '__main__':
                         help="number of active learning cycles - will not continue if entire dataset is labelled")
     parser.add_argument('-ls', '--labeling_strategy', default='random_sampling',
                         help="strategy to choose unlabelled samples, options: random_sampling")
-
+    parser.add_argument('-logfile', default='log', help="filepath of the created log file")
     arguments = parser.parse_args()
     print(arguments)
     ActiveLearningBench(arguments).run()
