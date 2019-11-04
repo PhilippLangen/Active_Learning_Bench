@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
+from scipy import spatial
 from sklearn.decomposition import PCA
 
 
@@ -85,6 +86,7 @@ class ActiveLearningBench:
         self.epochs = args.epochs
         self.budget = args.budget
         self.target_layer = args.target_layer
+        self.vis = args.visualize
         # make sure we don't keep iterating if we run out of samples
         self.iterations = min(args.iterations,
                               int((len(self.training_set.data)-self.initial_training_size) / self.budget))
@@ -155,10 +157,60 @@ class ActiveLearningBench:
               100 * correct / total))
         return correct/total
 
-    def random_sampling(self):
+    def greedy_k_center(self, activations):
+        """
+        greedy k center strategy
+        :param activations:
+        :return:
+        """
+        activations = activations.to("cpu").numpy()
+        # unlabelled_data , labelled_data are in modified index order
+        unlabelled_data = activations[self.unlabelled_idx]
+        labelled_data = activations[self.labelled_idx]
+
+        # create distance matrix axis 0 is unlabelled data 1 is labelled data
+        distance_matrix = spatial.distance.cdist(unlabelled_data, labelled_data)
+        # for each unlabelled date find min distance to labelled
+        min_dist = np.min(distance_matrix, axis=1)
+
+        for i in range(self.budget):
+            # find index of largest min_dist entry
+            idx = np.argmax(min_dist)
+            # min_dist is in index modified order, so to find original order index use index list
+            new_sample_idx = self.unlabelled_idx[idx]
+            # get data of new labelled sample
+            new_sample_data = unlabelled_data[idx]
+            # we delete this index out of unlabelled_idx and add it to labelled_idx this changes modified idx order
+            self.unlabelled_idx = np.delete(self.unlabelled_idx, idx)
+            # add the original index of the new sample to the labelled indices
+            self.labelled_idx = np.append(self.labelled_idx, new_sample_idx)
+            # we also delete the data row, this makes same change to modified idx order balancing out
+            unlabelled_data = np.delete(unlabelled_data, idx, axis=0)
+            # Finally delete out of distance list, same change to mod idx order
+            min_dist = np.delete(min_dist, idx, axis=0)
+
+            # now we need to see if sampling has minimized any min distances to labelled samples
+            # finally calc min over 2 values
+            min_dist = \
+                np.min(
+                    # add distances to new sample to old min distance_matrix values shape(x,1) -> (x,2)
+                    np.append(
+                        np.reshape(min_dist, (-1, 1)),
+                        # first calc distance from unlabelled to new sample
+                        spatial.distance.cdist(unlabelled_data, np.reshape(new_sample_data, (1, -1))),
+                        axis=1),
+                    axis=1)
+
+        # update data loader
+        labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
+        self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
+                                                            sampler=labelled_sampler, num_workers=2)
+
+    def random_sampling(self, activations):
         """
         random sampling strategy
-        :return: new samples for labelling
+        :param activations: vector data is not used in this strategy
+        :return:
         """
         added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False)
         self.update_train_loader(added_samples)
@@ -190,7 +242,7 @@ class ActiveLearningBench:
             if i == self.target_layer:
                 num_features = layer[1].out_features
                 hook = Hook(layer[1])
-        print("creating vector representation of training set")
+        print("Creating vector representation of training set")
         with torch.no_grad():
             # initialize containers for data
             activation_all = torch.empty(size=(0, num_features), device=self.device)
@@ -218,6 +270,7 @@ class ActiveLearningBench:
         :param iteration:
         :return:
         """
+        print("Creating Visualization")
         np_act = activations.to("cpu").numpy()
         loss = loss.to("cpu").numpy()
         # l2 normalize each feature of activations
@@ -261,11 +314,14 @@ class ActiveLearningBench:
             results.append(self.test())
             # get vec representation
             act, loss = self.create_vector_rep()
-            self.visualize(act, loss, i)
+            if self.vis:
+                self.visualize(act, loss, i)
             # use selected sampling strategy
-            self.__getattribute__(self.sampling_strategy)()
+            print("Select samples for labelling")
+            self.__getattribute__(self.sampling_strategy)(act)
 
-
+        self.train()
+        results.append(self.test())
         log = {'Strategy': self.sampling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results}
         with open(self.filepath, 'w', encoding='utf-8') as file:
@@ -288,6 +344,7 @@ if __name__ == '__main__':
     parser.add_argument('-ls', '--labeling_strategy', default='random_sampling',
                         help="strategy to choose unlabelled samples, options: random_sampling")
     parser.add_argument('-logfile', default='log', help="filepath of the created log file")
+    parser.add_argument('-vis', '--visualize', action='store_true')
     arguments = parser.parse_args()
     print(arguments)
     ActiveLearningBench(arguments).run()
