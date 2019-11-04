@@ -161,7 +161,7 @@ class ActiveLearningBench:
         :return: new samples for labelling
         """
         added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False)
-        return added_samples
+        self.update_train_loader(added_samples)
 
     def update_train_loader(self, added_samples):
         """
@@ -263,9 +263,8 @@ class ActiveLearningBench:
             act, loss = self.create_vector_rep()
             self.visualize(act, loss, i)
             # use selected sampling strategy
-            added_samples = self.__getattribute__(self.sampling_strategy)()
-            # add samples to labelled_idx
-            self.update_train_loader(added_samples)
+            self.__getattribute__(self.sampling_strategy)()
+
 
         log = {'Strategy': self.sampling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results}
