@@ -1,6 +1,6 @@
 import argparse
 import json
-import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -61,16 +61,16 @@ class ActiveLearningBench:
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=args.learning_rate, momentum=0.9)
-        if not os.path.isdir('./datasets'):
-            os.mkdir('./datasets')
-        if not os.path.isdir('./plots'):
-            os.mkdir('./plots')
-        if not os.path.isdir('./logs'):
-            os.mkdir('./logs')
-        self.filepath = os.path.join('./logs', args.logfile + '.json')
-        i = 0
-        while os.path.isfile(self.filepath):
-            self.filepath = os.path.join('./logs', args.logfile + str(i) + '.json')
+        if not Path('./datasets').is_dir():
+            Path('./datasets').mkdir()
+        if not Path('./plots').is_dir():
+            Path('./plots').mkdir()
+        if not Path('./logs').is_dir():
+            Path('./logs').mkdir()
+        self.filepath = Path(f'./logs/{args.logfile}.json')
+        i = 1
+        while Path(self.filepath).is_file():
+            self.filepath = Path(f'./logs/{args.logfile}_{i}.json')
             i += 1
         # normalize data with mean/std of dataset
         self.data_transform = transforms.Compose([transforms.ToTensor(),
@@ -114,7 +114,7 @@ class ActiveLearningBench:
         """
         main training loop
         """
-        print("Training on %d samples." % self.labelled_idx.shape[0])
+        print(f"Training on {self.labelled_idx.shape[0]} samples.")
         for epoch in range(self.epochs):  # loop over the dataset multiple times
 
             running_loss = 0.0
@@ -134,8 +134,7 @@ class ActiveLearningBench:
                 # print statistics
                 running_loss += loss.item()
                 if i % 20 == 19:  # print every 20 mini-batches
-                    print('[%d, %d/%d] loss: %.3f' %
-                          (epoch + 1, i + 1,  len(self.train_loader), running_loss / 20))
+                    print(f'[{epoch+1}, {i+1}/{len(self.train_loader)}] loss: {running_loss/20:.3f}')
                     running_loss = 0.0
 
     def test(self):
@@ -153,8 +152,7 @@ class ActiveLearningBench:
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
 
-        print('Accuracy of the network on the %d test images: %d %%' % (len(self.test_set.data),
-              100 * correct / total))
+        print(f'Accuracy of the network on the {len(self.test_set.data)} test images: {100 * correct / total:.2f}%')
         return correct/total
 
     def greedy_k_center(self, activations):
@@ -204,7 +202,7 @@ class ActiveLearningBench:
         # update data loader
         labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
-                                                            sampler=labelled_sampler, num_workers=2)
+                                                        sampler=labelled_sampler, num_workers=2)
 
     def random_sampling(self, activations):
         """
@@ -297,7 +295,7 @@ class ActiveLearningBench:
         fig, ax = plt.subplots()
         ax.scatter(unlabelled_vec[0], unlabelled_vec[1], c="grey", s=unlabelled_loss*10, alpha=0.5)
         ax.scatter(labelled_vec[0], labelled_vec[1], c="b", s=labelled_loss*10, alpha=0.5)
-        plt.savefig("./plots/%s.png" % iteration, bbox_inches='tight')
+        plt.savefig(f"./plots/{iteration}.png", bbox_inches='tight')
         plt.close(fig)
 
     def run(self):
@@ -324,10 +322,9 @@ class ActiveLearningBench:
         results.append(self.test())
         log = {'Strategy': self.sampling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results}
-        with open(self.filepath, 'w', encoding='utf-8') as file:
+        with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
             file.close()
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
