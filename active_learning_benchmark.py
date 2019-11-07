@@ -1,7 +1,7 @@
-import argparse
 import json
 from pathlib import Path
 
+import fire
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn.preprocessing
@@ -55,22 +55,36 @@ class Hook:
 
 
 class ActiveLearningBench:
-    def __init__(self, args):
+    """
+    Testing bench for various geometry based active learning strategies
+        :param labeling_strategy: Choose a strategy to select new samples. Options: random_sampling, greedy_k_center
+        :param logfile: Filename for the json log created for this run
+        :param initial_training_size: Number of initially labelled samples
+        :param batch_size: Number of samples per gradient update
+        :param epochs: Number of epochs trained between introduction of new samples
+        :param budget: Number of samples added in each iteration
+        :param iterations: Maximum number of labeling iterations
+        :param learning_rate: Learning rate for training
+        :param target_layer: Layer at which activations are extracted
+        :param vis: Toggle plots visualizing activations in 2-D space using PCA
+    """
+    def __init__(self, labeling_strategy="random_sampling", logfile="log", initial_training_size=1000, batch_size=32,
+                 epochs=5, budget=1000, iterations=20, learning_rate=0.001, target_layer=4, vis=False):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model = SimpleCNN()
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=args.learning_rate, momentum=0.9)
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, momentum=0.9)
         if not Path('./datasets').is_dir():
             Path('./datasets').mkdir()
         if not Path('./plots').is_dir():
             Path('./plots').mkdir()
         if not Path('./logs').is_dir():
             Path('./logs').mkdir()
-        self.filepath = Path(f'./logs/{args.logfile}.json')
+        self.filepath = Path(f'./logs/{logfile}.json')
         i = 1
         while Path(self.filepath).is_file():
-            self.filepath = Path(f'./logs/{args.logfile}_{i}.json')
+            self.filepath = Path(f'./logs/{logfile}_{i}.json')
             i += 1
         # normalize data with mean/std of dataset
         self.data_transform = transforms.Compose([transforms.ToTensor(),
@@ -80,15 +94,15 @@ class ActiveLearningBench:
                                                          transform=self.data_transform)
         self.test_set = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True,
                                                      transform=self.data_transform)
-        self.sampling_strategy = args.labeling_strategy
-        self.initial_training_size = args.initial_training_size
-        self.batch_size = args.batch_size
-        self.epochs = args.epochs
-        self.budget = args.budget
-        self.target_layer = args.target_layer
-        self.vis = args.visualize
+        self.labeling_strategy = labeling_strategy
+        self.initial_training_size = min(initial_training_size, len(self.training_set.data))
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.budget = budget
+        self.target_layer = target_layer
+        self.vis = vis
         # make sure we don't keep iterating if we run out of samples
-        self.iterations = min(args.iterations,
+        self.iterations = min(iterations,
                               int((len(self.training_set.data)-self.initial_training_size) / self.budget))
         # keep track of dataset indices and which samples have already been labelled
         self.unlabelled_idx = np.arange(0, self.training_set.data.shape[0])
@@ -316,32 +330,15 @@ class ActiveLearningBench:
                 self.visualize(act, loss, i)
             # use selected sampling strategy
             print("Select samples for labelling")
-            self.__getattribute__(self.sampling_strategy)(act)
+            self.__getattribute__(self.labeling_strategy)(act)
 
         self.train()
         results.append(self.test())
-        log = {'Strategy': self.sampling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
+        log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
             file.close()
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-epochs', default=5, type=int, help="number of epochs to train")
-    parser.add_argument('-batch_size', default=32, type=int, help="number of samples per optimization step")
-    parser.add_argument('-lr', '--learning_rate', default=0.001, type=float, help="learning rate")
-    parser.add_argument('-init_size', '--initial_training_size', default=10000, type=int,
-                        help="initial number of labelled training samples")
-    parser.add_argument('-target_layer', default=4, type=int, help="layer where activations are extracted")
-    parser.add_argument('-budget', default=1000, type=int,
-                        help="number of samples added after each active learning iteration")
-    parser.add_argument('-iterations', default=40, type=int,
-                        help="number of active learning cycles - will not continue if entire dataset is labelled")
-    parser.add_argument('-ls', '--labeling_strategy', default='random_sampling',
-                        help="strategy to choose unlabelled samples, options: random_sampling")
-    parser.add_argument('-logfile', default='log', help="filepath of the created log file")
-    parser.add_argument('-vis', '--visualize', action='store_true')
-    arguments = parser.parse_args()
-    print(arguments)
-    ActiveLearningBench(arguments).run()
+    fire.Fire(ActiveLearningBench)
