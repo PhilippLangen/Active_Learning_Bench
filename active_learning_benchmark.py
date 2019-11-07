@@ -312,18 +312,33 @@ class ActiveLearningBench:
         plt.savefig(f"./plots/{iteration}.png", bbox_inches='tight')
         plt.close(fig)
 
+    def get_class_distribution(self):
+        """
+        Calculates the distribution of classes in the labelled dataset
+        :return: class_distribution
+        """
+        class_distribution = np.zeros(len(self.training_set.classes))
+        for i, batch in enumerate(self.train_loader, 0):
+            for label in batch[1]:
+                class_distribution[label] += 1
+        class_distribution /= len(self.labelled_idx)
+
+        return class_distribution.tolist()
+
     def run(self):
         """
         run program
         :return:
         """
         results = list()
+        class_distribution = list()
         # main loop
         for i in range(self.iterations):
             # update model
             self.train()
             # benchmark
             results.append(self.test())
+            class_distribution.append(self.get_class_distribution())
             # get vec representation
             act, loss = self.create_vector_rep()
             if self.vis:
@@ -334,11 +349,17 @@ class ActiveLearningBench:
 
         self.train()
         results.append(self.test())
+        class_distribution.append(self.get_class_distribution())
+        if self.vis:
+            act, loss = self.create_vector_rep()
+            self.visualize(act, loss, self.iterations)
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
-               'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results}
+               'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results,
+               'Class Distribution': class_distribution}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
             file.close()
+
 
 if __name__ == '__main__':
     fire.Fire(ActiveLearningBench)
