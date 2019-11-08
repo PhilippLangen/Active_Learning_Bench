@@ -1,7 +1,7 @@
 # Active Learning Benchmark
 This repository provides a tool to test various geometric active learning approaches. Tests are conducted on the Cifar-10 dataset using a small CNN.
 To select new samples for labelling all samples are projected into a vector space using their network activations at a selected layer. 
-Then one of the available selection methods are used to add a batch of newly labelled samples to the training process.
+Then one of the available selection methods is used to add a batch of newly labelled samples to the training process.
 
 ## Installation
 ```
