@@ -154,20 +154,24 @@ class ActiveLearningBench:
     def test(self):
         """
         testing loop
-        :return: accuracy
+        :return: accuracy, confusion_matrix
         """
         correct = 0
         total = 0
         with torch.no_grad():
+            confusion_matrix = torch.zeros(size=(len(self.test_set.classes), len(self.test_set.classes)))
             for batch in self.test_loader:
                 images, labels = batch[0].to(self.device), batch[1].to(self.device)
                 outputs = self.model(images)
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
+                for tup in torch.stack([predicted, labels], dim=1):
+                    confusion_matrix[tup[0]][tup[1]] += 1
                 correct += (predicted == labels).sum().item()
 
         print(f'Accuracy of the network on the {len(self.test_set.data)} test images: {100 * correct / total:.2f}%')
-        return correct/total
+        confusion_matrix /= len(self.test_set.data)
+        return correct/total, confusion_matrix.tolist()
 
     def greedy_k_center(self, activations):
         """
@@ -330,14 +334,17 @@ class ActiveLearningBench:
         run program
         :return:
         """
-        results = list()
+        accuracy = list()
         class_distribution = list()
+        confusion_matrix = list()
         # main loop
         for i in range(self.iterations):
             # update model
             self.train()
             # benchmark
-            results.append(self.test())
+            acc, confuse = self.test()
+            accuracy.append(acc)
+            confusion_matrix.append(confuse)
             class_distribution.append(self.get_class_distribution())
             # get vec representation
             act, loss = self.create_vector_rep()
@@ -346,16 +353,19 @@ class ActiveLearningBench:
             # use selected sampling strategy
             print("Select samples for labelling")
             self.__getattribute__(self.labeling_strategy)(act)
-
+        # evaluation after last samples have been added
         self.train()
-        results.append(self.test())
+        acc, confuse = self.test()
+        accuracy.append(acc)
+        confusion_matrix.append(confuse)
         class_distribution.append(self.get_class_distribution())
         if self.vis:
             act, loss = self.create_vector_rep()
             self.visualize(act, loss, self.iterations)
+        # create log file
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
-               'Epochs': self.epochs, 'Batch Size': self.batch_size, 'Accuracy': results,
-               'Class Distribution': class_distribution}
+               'Epochs': self.epochs, 'Iterations': self.iterations, 'Batch Size': self.batch_size, 'Accuracy': accuracy,
+               'Class Distribution': class_distribution, 'Confusion Matrix': confusion_matrix}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
             file.close()
