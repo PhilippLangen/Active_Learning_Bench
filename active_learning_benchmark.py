@@ -74,7 +74,8 @@ class ActiveLearningBench:
         self.model = SimpleCNN()
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, momentum=0.9)
+        self.learning_rate = learning_rate
+        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9)
         if not Path('./datasets').is_dir():
             Path('./datasets').mkdir()
         if not Path('./plots').is_dir():
@@ -173,7 +174,7 @@ class ActiveLearningBench:
         confusion_matrix /= len(self.test_set.data)
         return correct/total, confusion_matrix.tolist()
 
-    def greedy_k_center(self, activations):
+    def greedy_k_center(self, activations):                                             # TODO use torch.cdist instead
         """
         greedy k center strategy
         :param activations:
@@ -252,12 +253,15 @@ class ActiveLearningBench:
         :return: target activations and loss for each sample
         """
         hook = None
-        num_features = 0
+        num_features = 1
         # install forward hook
         for i, layer in enumerate(self.model._modules.items()):
             if i == self.target_layer:
-                num_features = layer[1].out_features
                 hook = Hook(layer[1])
+                # run random image through network to get output size of layer
+                self.model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                for k in range(1, len(hook.output.size())):
+                    num_features *= hook.output.size()[k]
         print("Creating vector representation of training set")
         with torch.no_grad():
             # initialize containers for data
@@ -268,7 +272,8 @@ class ActiveLearningBench:
                 image, label = sample[0].to(self.device), sample[1].to(self.device)
                 # run forward, get activations from forward hook
                 out = self.model(image)
-                activations = hook.output
+                # flatten hooked activations - conv layer outputs are not flat by default
+                activations = hook.output.view(-1, num_features)
                 # gather activations
                 activation_all = torch.cat((activation_all, activations), 0)
                 for j in range(out.size()[0]):
@@ -364,7 +369,8 @@ class ActiveLearningBench:
             self.visualize(act, loss, self.iterations)
         # create log file
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
-               'Epochs': self.epochs, 'Iterations': self.iterations, 'Batch Size': self.batch_size, 'Accuracy': accuracy,
+               'Epochs': self.epochs, 'Iterations': self.iterations, 'Batch Size': self.batch_size,
+               'Learning Rate': self.learning_rate, 'Target Layer': self.target_layer, 'Accuracy': accuracy,
                'Class Distribution': class_distribution, 'Confusion Matrix': confusion_matrix}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
