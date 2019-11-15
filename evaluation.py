@@ -2,7 +2,11 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
+
+PLOT_PADDING_FACTOR = 40
+CIFAR_CLASSES = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 
 
 def merge_similar_runs():
@@ -25,7 +29,7 @@ def merge_similar_runs():
     log_map = defaultdict(lambda: list())
     # create list of logs for each unique settings key
     for idx, log in enumerate(log_files):
-        with open(log) as json_file:
+        with log.open() as json_file:
             json_data = json.load(json_file)
             key = (json_data["Strategy"], json_data["Budget"], json_data["Initial Split"],
                    json_data["Epochs"], json_data["Iterations"], json_data["Batch Size"],
@@ -73,13 +77,163 @@ def merge_similar_runs():
             json.dump(merged_dict, file, ensure_ascii=False)
 
 
+def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclude_plot_types=None):
+    if exclude_plot_types is None:
+        exclude_plot_types = {}
+    # get log data
+    logfile = Path(f"./logs/merged_logs/{merged_logfile}")
+    if not logfile.is_file():
+        print(f"invalid filename: {logfile} does not exist!")
+    with logfile.open() as json_file:
+        log_data = json.load(json_file)
+    plot_base_path = Path(f"./plots/single_setting_plots/{merged_logfile[:-5]}")
+    # create directory for all plots of logfile
+    if not plot_base_path.is_dir():
+        plot_base_path.mkdir(parents=True)
+    exclude_plot_types = {x.lower() for x in exclude_plot_types}
+    # mean plots
+    # accuracy
+    if 'accuracy' not in exclude_plot_types:
+        y_data = np.asarray(log_data["Accuracy Mean"])
+        error = np.asarray(log_data["Accuracy Std"])
+        x_data = (np.arange(y_data.shape[0])*log_data["Budget"]) + log_data["Initial Split"]
+        create_line_plot(x_data, y_data, Path.joinpath(plot_base_path, Path("Mean_Accuracy_Plot.png")), error=error,
+                         labels=["mean_acc"])
+    # class distribution
+    if "class distribution" not in exclude_plot_types:
+        mean_data = np.asarray(log_data["Class Distribution Mean"])
+        error = np.asarray(log_data["Class Distribution Std"])
+        create_class_dist_plot(mean_data, Path.joinpath(plot_base_path, Path("Class_Distribution_Mean")),
+                               "Mean_Class_Distribution_Plot", error=error, title="Mean Class Distribution",
+                               y_label="Mean Class Distribution")
+    # TODO
+    # class distribution entropy
+    # confusion matrix
+
+    # individual plots
+    if plot_individual_runs:
+        individual_plot_path = Path.joinpath(plot_base_path, Path("individual_runs"))
+        # accuracy
+        if "accuracy" not in exclude_plot_types:
+            ind_acc_path = Path.joinpath(individual_plot_path, Path("Accuracy"))
+            if not ind_acc_path.is_dir():
+                ind_acc_path.mkdir(parents=True)
+            y_data = np.asarray((log_data["Accuracy All"]))
+            # calculate y_bounds over all iterations so they match throughout the plots
+            y_bounds = (np.min(y_data) - ((np.max(y_data) - np.min(y_data)) / PLOT_PADDING_FACTOR),
+                        np.max(y_data) + ((np.max(y_data) - np.min(y_data)) / PLOT_PADDING_FACTOR))
+            x_data = (np.arange(y_data.shape[1]) * log_data["Budget"]) + log_data["Initial Split"]
+            for i in range(y_data.shape[0]):
+                create_line_plot(x_data, y_data[i], Path.joinpath(ind_acc_path, Path(f"Accuracy_Plot_Run_{i}.png")),
+                                 ["acc"], y_bounds=y_bounds, title=f"Accuracy Plot Run {i}")
+        if "class distribution" not in exclude_plot_types:
+            # class distributions
+            data = np.asarray(log_data["Class Distribution All"])
+            create_class_dist_plot(data, Path.joinpath(individual_plot_path, Path("Class_Distribution")),
+                                   "Class_Distribution_All_Plot")
+            # TODO
+            # class distribution entropy
+            # confusion matrix
 
 
+def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds=None, y_bounds=None,
+                     title="Accuracy Plot", x_label="Labelled Samples", y_label="Accuracy"):
+    if len(y_data.shape) == 1:
+        y_data = np.expand_dims(y_data, 0)
+    if x_bounds is None:
+        x_bounds = (np.min(x_data)-((np.max(x_data)-np.min(x_data))/PLOT_PADDING_FACTOR),
+                    np.max(x_data)+((np.max(x_data)-np.min(x_data))/PLOT_PADDING_FACTOR))
+    if y_bounds is None:
+        y_bounds = (np.min(y_data) - ((np.max(y_data)-np.min(y_data))/PLOT_PADDING_FACTOR),
+                    np.max(y_data) + ((np.max(y_data)-np.min(y_data))/PLOT_PADDING_FACTOR))
+        if error is not None:
+            y_bounds = (y_bounds[0] - np.max(error), y_bounds[1] + np.max(error))
+            if len(error.shape) == 1:
+                error = np.expand_dims(error, 0)
+    if labels is None:
+        labels = list()
+        for i in range(y_data.shape[0]):
+            labels.append("")
+    if error is not None:
+        fig, ax = plt.subplots(figsize=(7, 4))
+        for i in range(y_data.shape[0]):
+            ax.errorbar(x=x_data, y=y_data[i], yerr=error[i], marker='o', markersize=4, label=labels[i])
+        ax.legend(loc='lower right')
+        ax.set_xlim(x_bounds)
+        ax.set_ylim(y_bounds)
+        ax.set_xlabel('Labelled Samples')
+        ax.set_ylabel('Accuracy')
+        ax.set_title(title)
+        plt.savefig(out_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        fig, ax = plt.subplots(figsize=(7, 4))
+        for i in range(y_data.shape[0]):
+            ax.plot(x_data, y_data[i], marker='o', markersize=4, label=labels[i])
+        ax.legend(loc='lower right')
+        ax.set_xlim(x_bounds)
+        ax.set_ylim(y_bounds)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        ax.set_title(title)
+        plt.savefig(out_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
 
 
+def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error=None, title="Class Distribution",
+                           x_label="Classes", y_label="Class Distribution"):
+    if not Path(out_base_path).is_dir():
+        out_base_path.mkdir()
 
-
+    if len(data.shape) == 2:
+        data = np.expand_dims(data, 0)
+    y_bounds = (np.min(data) - ((np.max(data) - np.min(data)) / PLOT_PADDING_FACTOR),
+                np.max(data) + ((np.max(data) - np.min(data)) / PLOT_PADDING_FACTOR))
+    if error is not None:
+        y_bounds = (y_bounds[0] - np.max(error), y_bounds[1] + np.max(error))
+        if len(error.shape) == 2:
+            error = np.expand_dims(error, 0)
+    if labels is None:
+        labels = list()
+        for i in range(data.shape[0]):
+            labels.append(str(i))
+    np.random.seed(12)
+    colors = np.random.rand(data.shape[0], 3)
+    if error is not None:
+        for i in range(data.shape[1]):
+            fig, ax = plt.subplots(figsize=(7, 4))
+            x = np.arange(len(CIFAR_CLASSES))
+            for j in range(data.shape[0]):
+                bar_width = 0.8 / data.shape[0]
+                ax.bar(x + bar_width * j - 0.4, data[j, i, :], yerr=error[j, i, :], width=bar_width, color=colors[j],
+                       label=labels[j], align="edge")
+            ax.legend(loc='lower right')
+            ax.set_xticklabels(CIFAR_CLASSES)
+            ax.set_ylim(y_bounds)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
+            ax.set_title(f"{title} Iteration: {i}")
+            plt.savefig(Path.joinpath(out_base_path, Path(f"{out_filename}_{i}.png")), dpi=200, bbox_inches='tight')
+            plt.close(fig)
+    else:
+        for i in range(data.shape[1]):
+            fig, ax = plt.subplots(figsize=(7, 4))
+            x = np.arange(len(CIFAR_CLASSES))
+            for j in range(data.shape[0]):
+                bar_width = 0.8/data.shape[0]
+                ax.bar(x + bar_width*j-0.4, data[j, i, :], width=bar_width, color=colors[j], label=labels[j],
+                       align="edge")
+            ax.legend(loc='lower right')
+            ax.set_xticklabels(CIFAR_CLASSES)
+            ax.set_ylim(y_bounds)
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(y_label)
+            ax.set_title(f"{title} Iteration: {i}")
+            plt.savefig(Path.joinpath(out_base_path, Path(f"{out_filename}_{i}.png")), dpi=200, bbox_inches='tight')
+            plt.close(fig)
 
 
 if __name__ == '__main__':
     merge_similar_runs()
+    create_single_setting_plots("greedy_k_center_1000_1000_2_40_32_0.001_2.json",
+                                exclude_plot_types={"AccuraCy", "Class Distribution"})
