@@ -2,8 +2,10 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.stats
 
 PLOT_PADDING_FACTOR = 40
 CIFAR_CLASSES = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
@@ -41,11 +43,16 @@ def merge_similar_runs():
         acc = np.empty(shape=(0, key[4]+1))
         class_dist = np.empty(shape=(0, key[4]+1, 10))
         conf_mat = np.empty(shape=(0, key[4]+1, 10, 10))
+        info_gain = np.empty(shape=(0, key[4]+1))
         # accumulate date over multiple runs
         for log in log_list:
+
             acc = np.append(acc, np.expand_dims(np.asarray(log["Accuracy"]), axis=0), axis=0)
             class_dist = np.append(class_dist, np.expand_dims(np.asarray(log["Class Distribution"]), axis=0), axis=0)
             conf_mat = np.append(conf_mat, np.expand_dims(np.asarray(log["Confusion Matrix"]), axis=0), axis=0)
+            info_gain = np.append(info_gain,
+                                  np.asarray([scipy.stats.entropy(x, np.ones(10)/10)
+                                              for x in np.asarray(log["Class Distribution"])]).reshape((1, -1)), axis=0)
         # create mean and standard deviation info over runs
         acc_mean = np.mean(acc, axis=0)
         class_dist_mean = np.mean(class_dist, axis=0)
@@ -53,6 +60,8 @@ def merge_similar_runs():
         class_dist_std = np.std(class_dist, axis=0)
         conf_mat_mean = np.mean(conf_mat, axis=0)
         conf_mat_std = np.std(conf_mat, axis=0)
+        info_gain_mean = np.mean(info_gain, axis=0)
+        info_gain_std = np.std(info_gain, axis=0)
         # turn back to serializable format
         acc = acc.tolist()
         acc_mean = acc_mean.tolist()
@@ -63,13 +72,18 @@ def merge_similar_runs():
         conf_mat = conf_mat.tolist()
         conf_mat_mean = conf_mat_mean.tolist()
         conf_mat_std = conf_mat_std.tolist()
+        info_gain = info_gain.tolist()
+        info_gain_mean = info_gain_mean.tolist()
+        info_gain_std = info_gain_std.tolist()
         # create json structure
         merged_dict = {"Strategy": key[0], "Budget": key[1], "Initial Split": key[2], "Epochs": key[3],
                        "Iterations": key[4], "Batch Size": key[5], "Learning Rate": key[6], "Target Layer": key[7],
                        "Accuracy All": acc, "Accuracy Mean": acc_mean, "Accuracy Std": acc_std,
                        "Class Distribution All": class_dist, "Class Distribution Mean": class_dist_mean,
                        "Class Distribution Std": class_dist_std, "Confusion Matrix All": conf_mat,
-                       "Confusion Matrix Mean": conf_mat_mean, "Confusion Matrix Std": conf_mat_std}
+                       "Confusion Matrix Mean": conf_mat_mean, "Confusion Matrix Std": conf_mat_std,
+                       "Information Gain All": info_gain, "Information Gain Mean": info_gain_mean,
+                       "Information Gain Std": info_gain_std}
         # generate a filename by settings
         target_file = Path(f"{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}_{key[5]}_{key[6]}_{key[7]}.json")
         # create json file
@@ -98,17 +112,34 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
         error = np.asarray(log_data["Accuracy Std"])
         x_data = (np.arange(y_data.shape[0])*log_data["Budget"]) + log_data["Initial Split"]
         create_line_plot(x_data, y_data, Path.joinpath(plot_base_path, Path("Mean_Accuracy_Plot.png")), error=error,
-                         labels=["mean_acc"])
+                         labels=["mean_acc"], show_legend=False)
     # class distribution
     if "class distribution" not in exclude_plot_types:
         mean_data = np.asarray(log_data["Class Distribution Mean"])
         error = np.asarray(log_data["Class Distribution Std"])
         create_class_dist_plot(mean_data, Path.joinpath(plot_base_path, Path("Class_Distribution_Mean")),
                                "Mean_Class_Distribution_Plot", error=error, title="Mean Class Distribution",
-                               y_label="Mean Class Distribution")
-    # TODO
-    # class distribution entropy
-    # confusion matrix
+                               y_label="Mean Class Distribution", labels=["mean_class_dist"], show_legend=False)
+    # class distribution information gain
+    if "class distribution information gain" not in exclude_plot_types:
+        info_gain = np.asarray(log_data["Information Gain Mean"])
+        error = np.asarray(log_data["Information Gain Std"])
+        create_line_plot(np.arange(info_gain.shape[0]), info_gain,
+                         Path.joinpath(plot_base_path, Path("Mean_Information_Gain_Plot.png")), error=error,
+                         labels=["mean_ig"], x_label="Iteration", y_label="Information Gain",
+                         title="Information Gain Over Balanced Distribution - High = Unbalanced", show_legend=False)
+    if "confusion matrix" not in exclude_plot_types:
+        conf_data = np.asarray(log_data["Confusion Matrix Mean"])
+        # normalize over each class
+        norm_fac = 1/conf_data.sum(axis=1)
+        for i in range(conf_data.shape[0]):
+            for j in range(conf_data.shape[2]):
+                conf_data[i, :, j] = conf_data[i, :, j]*norm_fac[i, j]
+        # this plot will not incorporate std
+        # also no plot for individual runs
+        create_confusion_matrix_plot(conf_data,
+                                     out_base_path=Path.joinpath(plot_base_path, Path("Confusion_Matrix_Mean")),
+                                     out_filename="Confusion_Matrix_Plot")
 
     # individual plots
     if plot_individual_runs:
@@ -125,19 +156,31 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
             x_data = (np.arange(y_data.shape[1]) * log_data["Budget"]) + log_data["Initial Split"]
             for i in range(y_data.shape[0]):
                 create_line_plot(x_data, y_data[i], Path.joinpath(ind_acc_path, Path(f"Accuracy_Plot_Run_{i}.png")),
-                                 ["acc"], y_bounds=y_bounds, title=f"Accuracy Plot Run {i}")
+                                 ["acc"], y_bounds=y_bounds, title=f"Accuracy Plot Run {i}", show_legend=False)
         if "class distribution" not in exclude_plot_types:
             # class distributions
             data = np.asarray(log_data["Class Distribution All"])
             create_class_dist_plot(data, Path.joinpath(individual_plot_path, Path("Class_Distribution")),
                                    "Class_Distribution_All_Plot")
-            # TODO
-            # class distribution entropy
-            # confusion matrix
+            # class distribution information gain
+        if "class distribution information gain" not in exclude_plot_types:
+            ind_info_path = Path.joinpath(individual_plot_path, Path("Info_Gain"))
+            if not ind_info_path.is_dir():
+                ind_info_path.mkdir(parents=True)
+            y_data = np.asarray(log_data["Information Gain All"])
+            # calculate y_bounds over all iterations so they match throughout the plots
+            y_bounds = (np.min(y_data) - ((np.max(y_data) - np.min(y_data)) / PLOT_PADDING_FACTOR),
+                        np.max(y_data) + ((np.max(y_data) - np.min(y_data)) / PLOT_PADDING_FACTOR))
+            for i in range(y_data.shape[0]):
+                create_line_plot(np.arange(y_data.shape[1]), y_data[i],
+                                 Path.joinpath(ind_info_path, Path(f"Information_Gain_Plot_Run_{i}.png")),
+                                 labels=["info_gain"], x_label="Iteration", y_label="Information Gain",
+                                 y_bounds=y_bounds, show_legend=False,
+                                 title=f"Information Gain Over Balanced Distribution Run {i} - High = Unbalanced")
 
 
 def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds=None, y_bounds=None,
-                     title="Accuracy Plot", x_label="Labelled Samples", y_label="Accuracy"):
+                     title="Accuracy Plot", x_label="Labelled Samples", y_label="Accuracy", show_legend=True):
     if len(y_data.shape) == 1:
         y_data = np.expand_dims(y_data, 0)
     if x_bounds is None:
@@ -158,7 +201,8 @@ def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds
         fig, ax = plt.subplots(figsize=(7, 4))
         for i in range(y_data.shape[0]):
             ax.errorbar(x=x_data, y=y_data[i], yerr=error[i], marker='o', markersize=4, label=labels[i])
-        ax.legend(loc='lower right')
+        if show_legend:
+            ax.legend(loc='lower right')
         ax.set_xlim(x_bounds)
         ax.set_ylim(y_bounds)
         ax.set_xlabel(x_label)
@@ -170,7 +214,8 @@ def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds
         fig, ax = plt.subplots(figsize=(7, 4))
         for i in range(y_data.shape[0]):
             ax.plot(x_data, y_data[i], marker='o', markersize=4, label=labels[i])
-        ax.legend(loc='lower right')
+        if show_legend:
+            ax.legend(loc='lower right')
         ax.set_xlim(x_bounds)
         ax.set_ylim(y_bounds)
         ax.set_xlabel(x_label)
@@ -181,7 +226,7 @@ def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds
 
 
 def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error=None, title="Class Distribution",
-                           x_label="Classes", y_label="Class Distribution"):
+                           x_label="Classes", y_label="Class Distribution", show_legend=True):
     if not Path(out_base_path).is_dir():
         out_base_path.mkdir()
 
@@ -196,7 +241,7 @@ def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error
     if labels is None:
         labels = list()
         for i in range(data.shape[0]):
-            labels.append(str(i))
+            labels.append(f"run:{i}")
     np.random.seed(12)
     colors = np.random.rand(data.shape[0], 3)
     if error is not None:
@@ -207,8 +252,12 @@ def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error
                 bar_width = 0.8 / data.shape[0]
                 ax.bar(x + bar_width * j - 0.4, data[j, i, :], yerr=error[j, i, :], width=bar_width, color=colors[j],
                        label=labels[j], align="edge")
-            ax.legend(loc='lower right')
+            if show_legend:
+                ax.legend(loc='lower right')
+            ax.set_xticks(np.arange(len(CIFAR_CLASSES)))
             ax.set_xticklabels(CIFAR_CLASSES)
+            plt.setp(ax.get_xticklabels(), rotation=30, ha="right",
+                     rotation_mode="anchor")
             ax.set_ylim(y_bounds)
             ax.set_xlabel(x_label)
             ax.set_ylabel(y_label)
@@ -223,8 +272,12 @@ def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error
                 bar_width = 0.8/data.shape[0]
                 ax.bar(x + bar_width*j-0.4, data[j, i, :], width=bar_width, color=colors[j], label=labels[j],
                        align="edge")
-            ax.legend(loc='lower right')
+            if show_legend:
+                ax.legend(loc='lower right')
+            ax.set_xticks(np.arange(len(CIFAR_CLASSES)))
             ax.set_xticklabels(CIFAR_CLASSES)
+            plt.setp(ax.get_xticklabels(), rotation=30, ha="right",
+                     rotation_mode="anchor")
             ax.set_ylim(y_bounds)
             ax.set_xlabel(x_label)
             ax.set_ylabel(y_label)
@@ -233,7 +286,134 @@ def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error
             plt.close(fig)
 
 
+def create_confusion_matrix_plot(data, out_base_path, out_filename, xlabel="True Label", ylabel="Predicted Label"):
+    if not Path(out_base_path).is_dir():
+        out_base_path.mkdir()
+    for i in range(data.shape[0]):
+        fig, ax = plt.subplots(figsize=(7.2, 6))
+        im, cbar = heatmap(data[i], CIFAR_CLASSES, CIFAR_CLASSES, ax=ax,
+                           cmap="YlGn", cbarlabel="Fraction Labelled", xlabel=xlabel, ylabel=ylabel)
+        annotate_heatmap(im, valfmt="{x:.3f}")
+
+        fig.tight_layout()
+        plt.savefig(Path.joinpath(out_base_path, Path(f"{out_filename}_{i}.png")), dpi=200, bbox_inches='tight')
+        plt.close(fig)
+
+
+def heatmap(data, row_labels, col_labels, ax=None,
+            cbar_kw={}, cbarlabel="", xlabel="", ylabel="", **kwargs):
+    """
+    Taken from https://matplotlib.org/3.1.1/gallery/images_contours_and_fields/image_annotated_heatmap.html
+    :param data:
+    :param row_labels:
+    :param col_labels:
+    :param ax:
+    :param cbar_kw:
+    :param cbarlabel:
+    :param xlabel:
+    :param ylabel:
+    :param kwargs:
+    :return:
+    """
+
+    if not ax:
+        ax = plt.gca()
+
+    # Plot the heatmap
+    im = ax.imshow(data, **kwargs)
+
+    # Create colorbar
+    cbar = ax.figure.colorbar(im, ax=ax, **cbar_kw)
+    cbar.ax.set_ylabel(cbarlabel, rotation=-90, va="bottom")
+
+    # We want to show all ticks...
+    ax.set_xticks(np.arange(data.shape[1]))
+    ax.set_yticks(np.arange(data.shape[0]))
+    # ... and label them with the respective list entries.
+    ax.set_xticklabels(col_labels)
+    ax.set_yticklabels(row_labels)
+
+    # Let the horizontal axes labeling appear on top.
+    ax.tick_params(top=True, bottom=False,
+                   labeltop=True, labelbottom=False)
+
+    # Rotate the tick labels and set their alignment.
+    plt.setp(ax.get_xticklabels(), rotation=-30, ha="right",
+             rotation_mode="anchor")
+
+    # Turn spines off and create white grid.
+    for edge, spine in ax.spines.items():
+        spine.set_visible(False)
+    ax.set_xlabel(xlabel)
+    ax.xaxis.set_label_position('top')
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(np.arange(data.shape[1] + 1) - .5, minor=True)
+    ax.set_yticks(np.arange(data.shape[0] + 1) - .5, minor=True)
+    ax.grid(which="minor", color="w", linestyle='-', linewidth=3)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    return im, cbar
+
+
+def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
+                     textcolors=["black", "white"],
+                     threshold=None, **textkw):
+    """
+    A function to annotate a heatmap.
+    Taken from https://matplotlib.org/3.1.1/gallery/images_contours_and_fields/image_annotated_heatmap.html
+    Parameters
+    ----------
+    im
+        The AxesImage to be labeled.
+    data
+        Data used to annotate.  If None, the image's data is used.  Optional.
+    valfmt
+        The format of the annotations inside the heatmap.  This should either
+        use the string format method, e.g. "$ {x:.2f}", or be a
+        `matplotlib.ticker.Formatter`.  Optional.
+    textcolors
+        A list or array of two color specifications.  The first is used for
+        values below a threshold, the second for those above.  Optional.
+    threshold
+        Value in data units according to which the colors from textcolors are
+        applied.  If None (the default) uses the middle of the colormap as
+        separation.  Optional.
+    **kwargs
+        All other arguments are forwarded to each call to `text` used to create
+        the text labels.
+    """
+
+    if not isinstance(data, (list, np.ndarray)):
+        data = im.get_array()
+
+    # Normalize the threshold to the images color range.
+    if threshold is not None:
+        threshold = im.norm(threshold)
+    else:
+        threshold = im.norm(data.max()) / 2.
+
+    # Set default alignment to center, but allow it to be
+    # overwritten by textkw.
+    kw = dict(horizontalalignment="center",
+              verticalalignment="center")
+    kw.update(textkw)
+
+    # Get the formatter in case a string is supplied
+    if isinstance(valfmt, str):
+        valfmt = matplotlib.ticker.StrMethodFormatter(valfmt)
+
+    # Loop over the data and create a `Text` for each "pixel".
+    # Change the text's color depending on the data.
+    texts = []
+    for i in range(data.shape[0]):
+        for j in range(data.shape[1]):
+            kw.update(color=textcolors[int(im.norm(data[i, j]) > threshold)])
+            text = im.axes.text(j, i, valfmt(data[i, j], None), **kw)
+            texts.append(text)
+
+    return texts
+
+
 if __name__ == '__main__':
     merge_similar_runs()
-    create_single_setting_plots("greedy_k_center_1000_1000_2_40_32_0.001_2.json",
-                                exclude_plot_types={"AccuraCy", "Class Distribution"})
+
