@@ -9,6 +9,7 @@ import scipy.stats
 
 PLOT_PADDING_FACTOR = 40
 CIFAR_CLASSES = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+MERGED_LOGS_PATH = "./logs/merged_logs"
 
 
 def merge_similar_runs():
@@ -18,11 +19,11 @@ def merge_similar_runs():
     :return:
     """
     # create/ensure existence of log directories
-    target_path_base = "./logs/merged_logs"
+    target_path_base = MERGED_LOGS_PATH
     source_path_base = "./logs"
     if not Path(source_path_base).is_dir():
         print(f"Logfile directory {source_path_base} not found! Run experiments before using the evaluation tool")
-        exit(1)
+        raise SystemExit
     if not Path(target_path_base).is_dir():
         Path(target_path_base).mkdir()
     source_path_base = Path(source_path_base)
@@ -91,11 +92,139 @@ def merge_similar_runs():
             json.dump(merged_dict, file, ensure_ascii=False)
 
 
+def create_plots_over_setting(examined_setting, base_setting=None, base_setting_logfile=None, exclude_plot_types=None):
+    # Find matching log files
+    if exclude_plot_types is None:
+        exclude_plot_types = {}
+    exclude_plot_types = {x.lower() for x in exclude_plot_types}
+    plot_base_path = Path("./plots/setting_evaluation_plots")
+    allowed_variable_settings = ["Strategy", "Budget", "Initial Split", "Epochs", "Batch Size", "Iterations",
+                                 "Learning Rate", "Target Layer"]
+    examined_setting = examined_setting.title()
+    if examined_setting in allowed_variable_settings:
+        shared_settings = [setting for setting in allowed_variable_settings if examined_setting != setting]
+    else:
+        print(f"\'{examined_setting}\' did not match any allowed variable setting!"
+              f"\nAllowed settings are: {allowed_variable_settings}")
+        raise SystemExit
+    if base_setting is not None:
+        missing_settings = False
+        for setting in shared_settings:
+            if setting not in base_setting.keys():
+                print(f"{setting} missing from provided base settings!")
+                missing_settings = True
+        if missing_settings:
+            raise SystemExit
+        shared_settings_dict = {setting: base_setting[setting] for setting in shared_settings}
+    elif base_setting_logfile is not None:
+        base_log_path = Path.joinpath(Path(MERGED_LOGS_PATH), Path(base_setting_logfile))
+        if base_log_path.is_file():
+            with base_log_path.open() as json_file:
+                base_log = json.load(json_file)
+        else:
+            print(f"No log found at {base_log_path}!")
+            raise SystemExit
+        shared_settings_dict = {setting: base_log[setting] for setting in shared_settings}
+    else:
+        print("Need to provide the shared settings for evaluation, either by passing a setting dict to base_setting"
+              "\n or by passing a log file to base_setting_logfile matching the desired settings!")
+        raise SystemExit  
+    if not Path(MERGED_LOGS_PATH).is_dir():
+        print("Merged logs directory not found!\n"
+              " Make sure your log directory is not empty and you run merge_similar_runs() before creating plots")
+        raise SystemExit
+    all_log_paths = Path(MERGED_LOGS_PATH).glob('*.json')
+    all_logs = list()
+    for log_path in all_log_paths:
+        with log_path.open() as json_file:
+            all_logs.append(json.load(json_file))
+    print(f"Searching for logs matching: {shared_settings_dict},\n that differ in {examined_setting}")
+    matching_logs = list()
+    for log in all_logs:
+        matching = True
+        for setting in shared_settings:
+            if shared_settings_dict[setting] != log[setting]:
+                matching = False
+        if matching:
+            matching_logs.append(log)
+    if len(matching_logs) == 0:
+        print("There are no logs matching the selected settings")
+        raise SystemExit
+    elif len(matching_logs) == 1:
+        print("There is only one log matching your settings. Use create_single_setting_plots() instead")
+        raise SystemExit
+    else:
+        print(f"Found {len(matching_logs)} logs matching these setting!")
+    # create directory
+    dir_name = '_'
+    dir_name = dir_name.join([str(val) for val in shared_settings_dict.values()])
+    dir_name = f"Eval:{examined_setting}_with:{dir_name}"
+    plot_base_path = Path.joinpath(plot_base_path, Path(dir_name))
+    if not plot_base_path.is_dir():
+        plot_base_path.mkdir(parents=True)
+    # plots
+    if "accuracy" not in exclude_plot_types:
+        path = Path.joinpath(plot_base_path, Path("Accuracy Plot.png"))
+        acc_data_mean = list()
+        acc_data_error = list()
+        x_data = list()
+        labels = list()
+        for log in matching_logs:
+            acc_data_mean.append(np.asarray(log["Accuracy Mean"]))
+            acc_data_error.append(np.asarray(log["Accuracy Std"]))
+            x_data.append((np.arange(log["Iterations"]+1) * log["Budget"]) + log["Initial Split"])
+            labels.append(f"{examined_setting}: {log[examined_setting]}")
+
+        create_variable_length_line_plot(x_data,acc_data_mean,path,labels,acc_data_error)
+
+    if "class distribution information gain" not in exclude_plot_types:
+        path = Path.joinpath(plot_base_path, Path("Information Gain.png"))
+        ig_data_mean = list()
+        ig_data_error = list()
+        x_data = list()
+        labels = list()
+        for log in matching_logs:
+            ig_data_mean.append(np.asarray(log["Information Gain Mean"]))
+            ig_data_error.append(np.asarray(log["Information Gain Std"]))
+            x_data.append((np.arange(log["Iterations"]+1) * log["Budget"]) + log["Initial Split"])
+            labels.append(f"{examined_setting}: {log[examined_setting]}")
+
+        create_variable_length_line_plot(x_data, ig_data_mean, path, labels, ig_data_error,
+                                         title="Information Gain Over Balanced Distribution - High = Unbalanced",
+                                         y_label="Information Gain")
+
+
+def create_variable_length_line_plot(x_data, y_data, out_path, labels, error, title="Accuracy Plot",
+                                     x_label="Labelled Samples", y_label="Accuracy", show_legend=True):
+    x_min = min([np.min(x) for x in x_data])
+    x_max = max([np.max(x) for x in x_data])
+    std_max = max([np.max(err) for err in error])
+    y_min = min([np.min(y) for y in y_data])
+    y_max = max([np.max(y) for y in y_data])
+    x_bounds = (x_min - ((x_max-x_min)/PLOT_PADDING_FACTOR),
+                x_max + ((x_max-x_min)/PLOT_PADDING_FACTOR))
+    y_bounds = (y_min - ((y_max-y_min)/PLOT_PADDING_FACTOR) - std_max,
+                y_max + ((y_max-y_min)/PLOT_PADDING_FACTOR) + std_max)
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for i in range(len(y_data)):
+        ax.errorbar(x=x_data[i], y=y_data[i], yerr=error[i], marker='o', markersize=4, label=labels[i])
+    if show_legend:
+        ax.legend(loc='lower right')
+    ax.set_xlim(x_bounds)
+    ax.set_ylim(y_bounds)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
 def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclude_plot_types=None):
     if exclude_plot_types is None:
         exclude_plot_types = {}
     # get log data
-    logfile = Path(f"./logs/merged_logs/{merged_logfile}")
+    logfile = Path(f"{MERGED_LOGS_PATH}/{merged_logfile}")
     if not logfile.is_file():
         print(f"invalid filename: {logfile} does not exist!")
     with logfile.open() as json_file:
@@ -415,5 +544,6 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
 
 
 if __name__ == '__main__':
-    merge_similar_runs()
-
+    #merge_similar_runs()
+    #create_plots_over_setting("tArget layer", {"Strategy":"strat","Batch Size": 4, "Budget": 1000, "Epochs": 3, "Learning Rate": 0, "Initial Split": 123, "Iterations": 40})
+    create_plots_over_setting("Strategy", base_setting_logfile="greedy_k_center_1000_1000_2_40_32_0.001_4.json")
