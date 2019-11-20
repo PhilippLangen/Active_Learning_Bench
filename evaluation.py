@@ -2,6 +2,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
+import fire
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -92,7 +93,18 @@ def merge_similar_runs():
             json.dump(merged_dict, file, ensure_ascii=False)
 
 
-def create_plots_over_setting(examined_setting, base_setting=None, base_setting_logfile=None, exclude_plot_types=None):
+def create_plots_over_setting(examined_setting, base_setting, ignored_settings=[],  exclude_plot_types=None):
+    """
+    Creates various plots of runs that differ in exactly one setting, eg. different sampling strategy.
+    :param examined_setting: Setting you want to look into. Options: Strategy, Budget, Initial Split, Epochs,
+     Batch size, Iterations, Learning Rate, Target Layer
+    :param base_setting: Provides the shared settings, that are constant over all considered log files as a dict.\n
+    Alternatively can be provided as the name of a log file. Settings will then be inferred from it.
+    :param ignored_settings: List of Settings to ignore while gathering log files. Useful if there are dependencies
+    between the examined setting and the base settings eg. Budget and Iterations.
+    :param exclude_plot_types: list of plot types to omit. Options:["accuracy","class distribution information gain"]
+    :return:
+    """
     # Find matching log files
     if exclude_plot_types is None:
         exclude_plot_types = {}
@@ -107,7 +119,7 @@ def create_plots_over_setting(examined_setting, base_setting=None, base_setting_
         print(f"\'{examined_setting}\' did not match any allowed variable setting!"
               f"\nAllowed settings are: {allowed_variable_settings}")
         raise SystemExit
-    if base_setting is not None:
+    if type(base_setting) is dict:
         missing_settings = False
         for setting in shared_settings:
             if setting not in base_setting.keys():
@@ -116,19 +128,17 @@ def create_plots_over_setting(examined_setting, base_setting=None, base_setting_
         if missing_settings:
             raise SystemExit
         shared_settings_dict = {setting: base_setting[setting] for setting in shared_settings}
-    elif base_setting_logfile is not None:
-        base_log_path = Path.joinpath(Path(MERGED_LOGS_PATH), Path(base_setting_logfile))
+    else:
+        base_log_path = Path.joinpath(Path(MERGED_LOGS_PATH), Path(base_setting))
         if base_log_path.is_file():
             with base_log_path.open() as json_file:
                 base_log = json.load(json_file)
         else:
             print(f"No log found at {base_log_path}!")
             raise SystemExit
+        shared_settings = [setting for setting in shared_settings if setting not in ignored_settings]
+        print(shared_settings)
         shared_settings_dict = {setting: base_log[setting] for setting in shared_settings}
-    else:
-        print("Need to provide the shared settings for evaluation, either by passing a setting dict to base_setting"
-              "\n or by passing a log file to base_setting_logfile matching the desired settings!")
-        raise SystemExit  
     if not Path(MERGED_LOGS_PATH).is_dir():
         print("Merged logs directory not found!\n"
               " Make sure your log directory is not empty and you run merge_similar_runs() before creating plots")
@@ -175,7 +185,7 @@ def create_plots_over_setting(examined_setting, base_setting=None, base_setting_
             x_data.append((np.arange(log["Iterations"]+1) * log["Budget"]) + log["Initial Split"])
             labels.append(f"{examined_setting}: {log[examined_setting]}")
 
-        create_variable_length_line_plot(x_data,acc_data_mean,path,labels,acc_data_error)
+        create_variable_length_line_plot(x_data, acc_data_mean, path, labels, acc_data_error)
 
     if "class distribution information gain" not in exclude_plot_types:
         path = Path.joinpath(plot_base_path, Path("Information Gain.png"))
@@ -221,6 +231,14 @@ def create_variable_length_line_plot(x_data, y_data, out_path, labels, error, ti
 
 
 def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclude_plot_types=None):
+    """
+    Creates plots out of a single merged log file, such as accuracy, class distribution plot or confusion matrices.
+    :param merged_logfile: Filename of the merged log file to use.
+    :param plot_individual_runs: Whether or not plots for individual runs are created
+    :param exclude_plot_types: List of plot types that are omitted, Options: ["accuracy","class distribution",
+    "class distribution information gain", "confusion matrix"]
+    :return:
+    """
     if exclude_plot_types is None:
         exclude_plot_types = {}
     # get log data
@@ -544,6 +562,6 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
 
 
 if __name__ == '__main__':
-    #merge_similar_runs()
-    #create_plots_over_setting("tArget layer", {"Strategy":"strat","Batch Size": 4, "Budget": 1000, "Epochs": 3, "Learning Rate": 0, "Initial Split": 123, "Iterations": 40})
-    create_plots_over_setting("Strategy", base_setting_logfile="greedy_k_center_1000_1000_2_40_32_0.001_4.json")
+    fire.Fire({'merge': merge_similar_runs,
+               'single_plot': create_single_setting_plots,
+               'multi_plot': create_plots_over_setting})
