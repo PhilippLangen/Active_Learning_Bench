@@ -230,7 +230,7 @@ def create_variable_length_line_plot(x_data, y_data, out_path, labels, error, ti
     plt.close(fig)
 
 
-def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclude_plot_types=None):
+def create_single_setting_plots(merged_logfile, plot_individual_runs=False, exclude_plot_types=None):
     """
     Creates plots out of a single merged log file, such as accuracy, class distribution plot or confusion matrices.
     :param merged_logfile: Filename of the merged log file to use.
@@ -254,7 +254,9 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
     exclude_plot_types = {x.lower() for x in exclude_plot_types}
     # mean plots
     # accuracy
+    print("Creating averaged plots..")
     if 'accuracy' not in exclude_plot_types:
+        print("Creating accuracy plots.")
         y_data = np.asarray(log_data["Accuracy Mean"])
         error = np.asarray(log_data["Accuracy Std"])
         x_data = (np.arange(y_data.shape[0])*log_data["Budget"]) + log_data["Initial Split"]
@@ -262,6 +264,7 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
                          labels=["mean_acc"], show_legend=False)
     # class distribution
     if "class distribution" not in exclude_plot_types:
+        print("Creating class distribution plots.")
         mean_data = np.asarray(log_data["Class Distribution Mean"])
         error = np.asarray(log_data["Class Distribution Std"])
         create_class_dist_plot(mean_data, Path.joinpath(plot_base_path, Path("Class_Distribution_Mean")),
@@ -269,13 +272,16 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
                                y_label="Mean Class Distribution", labels=["mean_class_dist"], show_legend=False)
     # class distribution information gain
     if "class distribution information gain" not in exclude_plot_types:
+        print("Creating information gain plots.")
         info_gain = np.asarray(log_data["Information Gain Mean"])
         error = np.asarray(log_data["Information Gain Std"])
-        create_line_plot(np.arange(info_gain.shape[0]), info_gain,
+        x_data = (np.arange(info_gain.shape[0]) * log_data["Budget"]) + log_data["Initial Split"]
+        create_line_plot(x_data, info_gain,
                          Path.joinpath(plot_base_path, Path("Mean_Information_Gain_Plot.png")), error=error,
-                         labels=["mean_ig"], x_label="Iteration", y_label="Information Gain",
+                         labels=["mean_ig"], x_label="Labelled Samples", y_label="Information Gain",
                          title="Information Gain Over Balanced Distribution - High = Unbalanced", show_legend=False)
     if "confusion matrix" not in exclude_plot_types:
+        print("Creating confusion matrix plots.")
         conf_data = np.asarray(log_data["Confusion Matrix Mean"])
         # normalize over each class
         norm_fac = 1/conf_data.sum(axis=1)
@@ -289,10 +295,12 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
                                      out_filename="Confusion_Matrix_Plot")
 
     # individual plots
+    print("Creating individual plots..")
     if plot_individual_runs:
         individual_plot_path = Path.joinpath(plot_base_path, Path("individual_runs"))
         # accuracy
         if "accuracy" not in exclude_plot_types:
+            print("Creating accuracy plots.")
             ind_acc_path = Path.joinpath(individual_plot_path, Path("Accuracy"))
             if not ind_acc_path.is_dir():
                 ind_acc_path.mkdir(parents=True)
@@ -305,12 +313,14 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
                 create_line_plot(x_data, y_data[i], Path.joinpath(ind_acc_path, Path(f"Accuracy_Plot_Run_{i}.png")),
                                  ["acc"], y_bounds=y_bounds, title=f"Accuracy Plot Run {i}", show_legend=False)
         if "class distribution" not in exclude_plot_types:
+            print("Creating class distribution plots.")
             # class distributions
             data = np.asarray(log_data["Class Distribution All"])
             create_class_dist_plot(data, Path.joinpath(individual_plot_path, Path("Class_Distribution")),
                                    "Class_Distribution_All_Plot")
             # class distribution information gain
         if "class distribution information gain" not in exclude_plot_types:
+            print("Creating information gain plots.")
             ind_info_path = Path.joinpath(individual_plot_path, Path("Info_Gain"))
             if not ind_info_path.is_dir():
                 ind_info_path.mkdir(parents=True)
@@ -318,12 +328,16 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=True, exclu
             # calculate y_bounds over all iterations so they match throughout the plots
             y_bounds = (np.min(y_data) - ((np.max(y_data) - np.min(y_data)) / PLOT_PADDING_FACTOR),
                         np.max(y_data) + ((np.max(y_data) - np.min(y_data)) / PLOT_PADDING_FACTOR))
+            x_data = (np.arange(y_data.shape[1]) * log_data["Budget"]) + log_data["Initial Split"]
             for i in range(y_data.shape[0]):
-                create_line_plot(np.arange(y_data.shape[1]), y_data[i],
+                create_line_plot(x_data, y_data[i],
                                  Path.joinpath(ind_info_path, Path(f"Information_Gain_Plot_Run_{i}.png")),
-                                 labels=["info_gain"], x_label="Iteration", y_label="Information Gain",
+                                 labels=["info_gain"], x_label="Labelled Samples", y_label="Information Gain",
                                  y_bounds=y_bounds, show_legend=False,
                                  title=f"Information Gain Over Balanced Distribution Run {i} - High = Unbalanced")
+
+# Todo: create_line_plot should be combined with create_variable_length_line_plot()
+#  obeying the more flexible list(np.array) structure for the input data
 
 
 def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds=None, y_bounds=None,
