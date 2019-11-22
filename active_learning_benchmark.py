@@ -173,7 +173,7 @@ class ActiveLearningBench:
         confusion_matrix /= len(self.test_set.data)
         return correct/total, confusion_matrix.tolist()
 
-    def greedy_k_center(self, activations):
+    def greedy_k_center(self, activations, loss):
         """
                 greedy k center strategy
                 :param activations:
@@ -218,7 +218,30 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
 
-    def random_sampling(self, activations):
+    def spatial_loss_sampling(self, activations, loss):
+        with torch.no_grad():
+            unlabelled_data = activations[self.unlabelled_idx]
+            labelled_data = activations[self.labelled_idx]
+            loss = loss[self.labelled_idx]
+            loss = loss.squeeze()
+            # create distance matrix axis 0 is unlabelled data 1 is labelled data
+            distance_matrix = torch.cdist(unlabelled_data, labelled_data)
+            # use inverted squared distance to strongly favor close samples
+            distance_matrix.pow_(2)
+            distance_matrix.reciprocal_()
+            # normalize distances so samples with near neighbours do not get higher loss automatically
+            F.normalize(distance_matrix, p=1, dim=1, out=distance_matrix)
+            # create predicted loss by weighing neighbouring loss values with distance
+            predicted_loss = torch.matmul(distance_matrix, loss)
+            # normalize to get probability distribution
+            F.normalize(predicted_loss, p=1, dim=0, out=predicted_loss)
+            predicted_loss = predicted_loss.to("cpu").numpy()
+            # get new samples be randomly drawing with
+            added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False, p=predicted_loss)
+
+            self.update_train_loader(added_samples)
+
+    def random_sampling(self, activations, loss):
         """
         random sampling strategy
         :param activations: vector data is not used in this strategy
@@ -352,7 +375,7 @@ class ActiveLearningBench:
                 self.visualize(act, loss, i)
             # use selected sampling strategy
             print("Select samples for labelling")
-            self.__getattribute__(self.labeling_strategy)(act)
+            self.__getattribute__(self.labeling_strategy)(act, loss)
         # evaluation after last samples have been added
         self.train()
         acc, confuse = self.test()
