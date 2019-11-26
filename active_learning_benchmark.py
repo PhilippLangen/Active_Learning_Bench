@@ -12,6 +12,16 @@ import torchvision
 import torchvision.transforms as transforms
 from sklearn.decomposition import PCA
 
+VALIDATION_SET_SIZE = 5000
+EVALUATION_BATCH_SIZE = 100
+MAX_EPOCHS = 400
+LR_UPDATE_PATIENCE = 3
+LR_COOLDOWN = 5
+EARLY_STOPPING_PATIENCE = 15
+LEARNING_RATE = 0.001
+MOMENTUM = 0.9
+MINIMUM_LEARNING_RATE = 0.0001
+
 
 class SimpleCNN(nn.Module):
     """
@@ -63,18 +73,12 @@ class ActiveLearningBench:
         :param epochs: Number of epochs trained between introduction of new samples
         :param budget: Number of samples added in each iteration
         :param iterations: Maximum number of labeling iterations
-        :param learning_rate: Learning rate for training
         :param target_layer: Layer at which activations are extracted
         :param vis: Toggle plots visualizing activations in 2-D space using PCA
     """
     def __init__(self, labeling_strategy="random_sampling", logfile="log", initial_training_size=1000, batch_size=32,
-                 epochs=5, budget=1000, iterations=20, learning_rate=0.001, target_layer=4, vis=False):
+                 budget=1000, iterations=20, target_layer=4, vis=False):
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model = SimpleCNN()
-        self.model.to(self.device)
-        self.criterion = nn.CrossEntropyLoss()
-        self.learning_rate = learning_rate
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=self.learning_rate, momentum=0.9)
         if not Path('./datasets').is_dir():
             Path('./datasets').mkdir()
         if not Path('./plots').is_dir():
@@ -95,17 +99,19 @@ class ActiveLearningBench:
         self.test_set = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True,
                                                      transform=self.data_transform)
         self.labeling_strategy = labeling_strategy
-        self.initial_training_size = min(initial_training_size, len(self.training_set.data))
+        self.initial_training_size = min(initial_training_size, len(self.training_set.data)-VALIDATION_SET_SIZE)
         self.batch_size = batch_size
-        self.epochs = epochs
         self.budget = budget
         self.target_layer = target_layer
         self.vis = vis
         # make sure we don't keep iterating if we run out of samples
         self.iterations = min(iterations,
-                              int((len(self.training_set.data)-self.initial_training_size) / self.budget))
+                              int((len(self.training_set.data)-self.initial_training_size - VALIDATION_SET_SIZE) / self.budget))
         # keep track of dataset indices and which samples have already been labelled
         self.unlabelled_idx = np.arange(0, self.training_set.data.shape[0])
+        # pick validation set
+        validation_idx = np.random.choice(self.unlabelled_idx, VALIDATION_SET_SIZE, replace=False)
+        self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, validation_idx)
         # pick initial labelled indices
         self.labelled_idx = np.random.choice(self.unlabelled_idx, self.initial_training_size, replace=False)
         self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, self.labelled_idx)
@@ -114,55 +120,93 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set,
                                                         batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
-        self.no_grad_batch_size = 100   # How many samples are simultaneously processed during testing/act extraction
+        validation_sampler = torch.utils.data.SubsetRandomSampler(validation_idx)
+        self.validation_loader = torch.utils.data.DataLoader(dataset=self.training_set,
+                                                             batch_size=EVALUATION_BATCH_SIZE,
+                                                             sampler=validation_sampler,
+                                                             num_workers=2)
         self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set,
-                                                       batch_size=self.no_grad_batch_size,
+                                                       batch_size=EVALUATION_BATCH_SIZE,
                                                        num_workers=2)
         # for extraction order of samples needs to be preserved
         seq_sampler = torch.utils.data.SequentialSampler(self.training_set)
         self.seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set,
-                                                           batch_size=self.no_grad_batch_size,
+                                                           batch_size=EVALUATION_BATCH_SIZE,
                                                            sampler=seq_sampler, num_workers=2)
 
-    def train(self):
-        """
-        main training loop
-        """
+    def get_trained_model(self):
+        model = SimpleCNN()
+        model.to(self.device)
+        best_validation_model = None
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=LR_UPDATE_PATIENCE,
+                                                                  verbose=True, min_lr=MINIMUM_LEARNING_RATE,
+                                                                  cooldown=LR_COOLDOWN)
+        min_validation_loss = np.inf
+        epochs_without_validation_improvement = 0
         print(f"Training on {self.labelled_idx.shape[0]} samples.")
-        for epoch in range(self.epochs):  # loop over the dataset multiple times
-
+        for epoch in range(MAX_EPOCHS):
+            # training
+            model.train()
             running_loss = 0.0
             for i, batch in enumerate(self.train_loader, 0):
                 # get the inputs; data is a list of [inputs, labels]
                 inputs, labels = batch[0].to(self.device), batch[1].to(self.device)
 
                 # zero the parameter gradients
-                self.optimizer.zero_grad()
+                optimizer.zero_grad()
 
                 # forward + backward + optimize
-                outputs = self.model(inputs)
-                loss = self.criterion(outputs, labels)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
                 loss.backward()
-                self.optimizer.step()
+                optimizer.step()
 
                 # print statistics
                 running_loss += loss.item()
                 if i % 20 == 19:  # print every 20 mini-batches
-                    print(f'[{epoch+1}, {i+1}/{len(self.train_loader)}] loss: {running_loss/20:.3f}')
+                    print(f'[{epoch}: {i + 1}/{len(self.train_loader)}] loss: {running_loss / 20:.3f}')
                     running_loss = 0.0
+            # validation
+            model.eval()
+            with torch.no_grad():
+                average_validation_loss = 0.0
+                for i, batch in enumerate(self.validation_loader, 0):
+                    inputs, labels = batch[0].to(self.device), batch[1].to(self.device)
+                    outputs = model(inputs)
+                    average_validation_loss += criterion(outputs, labels)
+                average_validation_loss /= (VALIDATION_SET_SIZE / EVALUATION_BATCH_SIZE)
+                lr_scheduler.step(average_validation_loss)
+                print(f"Validation loss: {average_validation_loss:.3f}")
+            if average_validation_loss < min_validation_loss:
+                min_validation_loss = average_validation_loss
+                best_validation_model = model.state_dict()
+                epochs_without_validation_improvement = 0
+            else:
+                epochs_without_validation_improvement += 1
+            if epochs_without_validation_improvement == EARLY_STOPPING_PATIENCE:
+                # keep the net
+                model.load_state_dict(best_validation_model)
+                print(f"Training completed after {epoch} epochs.")
+                return model, criterion
+        print(f"Trained for maximum allowed epochs.")
+        model.load_state_dict(best_validation_model)
+        return model, criterion
 
-    def test(self):
+    def test(self, model):
         """
         testing loop
         :return: accuracy, confusion_matrix
         """
+        model.eval()
         correct = 0
         total = 0
         with torch.no_grad():
             confusion_matrix = torch.zeros(size=(len(self.test_set.classes), len(self.test_set.classes)))
             for batch in self.test_loader:
                 images, labels = batch[0].to(self.device), batch[1].to(self.device)
-                outputs = self.model(images)
+                outputs = model(images)
                 _, predicted = torch.max(outputs.data, 1)
                 total += labels.size(0)
                 for tup in torch.stack([predicted, labels], dim=1):
@@ -265,19 +309,20 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
 
-    def create_vector_rep(self):
+    def create_vector_rep(self, model, criterion):
         """
         extract activations add target layer, order of samples is preserved
         :return: target activations and loss for each sample
         """
+        model.eval()
         hook = None
         num_features = 1
         # install forward hook
-        for i, layer in enumerate(self.model._modules.items()):
+        for i, layer in enumerate(model._modules.items()):
             if i == self.target_layer:
                 hook = Hook(layer[1])
                 # run random image through network to get output size of layer
-                self.model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                model(torch.zeros((1, 3, 32, 32)).to(self.device))
                 for k in range(1, len(hook.output.size())):
                     num_features *= hook.output.size()[k]
         print("Creating vector representation of training set")
@@ -289,14 +334,14 @@ class ActiveLearningBench:
             for i, sample in enumerate(self.seq_data_loader, 0):
                 image, label = sample[0].to(self.device), sample[1].to(self.device)
                 # run forward, get activations from forward hook
-                out = self.model(image)
+                out = model(image)
                 # flatten hooked activations - conv layer outputs are not flat by default
                 activations = hook.output.view(-1, num_features)
                 # gather activations
                 activation_all = torch.cat((activation_all, activations), 0)
                 for j in range(out.size()[0]):
                     # force loss_fn to calculate for each sample separately
-                    loss_all[i*self.no_grad_batch_size+j] = self.criterion(out[j].unsqueeze(0), label[j].unsqueeze(0))
+                    loss_all[i*EVALUATION_BATCH_SIZE+j] = criterion(out[j].unsqueeze(0), label[j].unsqueeze(0))
         hook.close()
         return activation_all, loss_all
 
@@ -357,38 +402,38 @@ class ActiveLearningBench:
         run program
         :return:
         """
-        accuracy = list()
-        class_distribution = list()
-        confusion_matrix = list()
+        accuracy = []
+        class_distribution = []
+        confusion_matrix = []
         # main loop
         for i in range(self.iterations):
-            # update model
-            self.train()
+            # fully train model
+            model, criterion = self.get_trained_model()
             # benchmark
-            acc, confuse = self.test()
+            acc, confuse = self.test(model)
             accuracy.append(acc)
             confusion_matrix.append(confuse)
             class_distribution.append(self.get_class_distribution())
             # get vec representation
-            act, loss = self.create_vector_rep()
+            act, loss = self.create_vector_rep(model, criterion)
             if self.vis:
                 self.visualize(act, loss, i)
             # use selected sampling strategy
             print("Select samples for labelling")
             self.__getattribute__(self.labeling_strategy)(act, loss)
         # evaluation after last samples have been added
-        self.train()
-        acc, confuse = self.test()
+        model, criterion = self.get_trained_model()
+        acc, confuse = self.test(model)
         accuracy.append(acc)
         confusion_matrix.append(confuse)
         class_distribution.append(self.get_class_distribution())
         if self.vis:
-            act, loss = self.create_vector_rep()
+            act, loss = self.create_vector_rep(model, criterion)
             self.visualize(act, loss, self.iterations)
         # create log file
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
-               'Epochs': self.epochs, 'Iterations': self.iterations, 'Batch Size': self.batch_size,
-               'Learning Rate': self.learning_rate, 'Target Layer': self.target_layer, 'Accuracy': accuracy,
+               'Iterations': self.iterations, 'Batch Size': self.batch_size,
+               'Target Layer': self.target_layer, 'Accuracy': accuracy,
                'Class Distribution': class_distribution, 'Confusion Matrix': confusion_matrix}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)

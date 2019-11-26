@@ -36,16 +36,15 @@ def merge_similar_runs():
         with log.open() as json_file:
             json_data = json.load(json_file)
             key = (json_data["Strategy"], json_data["Budget"], json_data["Initial Split"],
-                   json_data["Epochs"], json_data["Iterations"], json_data["Batch Size"],
-                   json_data["Learning Rate"], json_data["Target Layer"])
+                   json_data["Iterations"], json_data["Batch Size"], json_data["Target Layer"])
             log_map[key].append(json_data)
     # loop over each setting key
     for key, log_list in log_map.items():
         # initialize data containers
-        acc = np.empty(shape=(0, key[4]+1))
-        class_dist = np.empty(shape=(0, key[4]+1, 10))
-        conf_mat = np.empty(shape=(0, key[4]+1, 10, 10))
-        info_gain = np.empty(shape=(0, key[4]+1))
+        acc = np.empty(shape=(0, key[3]+1))
+        class_dist = np.empty(shape=(0, key[3]+1, 10))
+        conf_mat = np.empty(shape=(0, key[3]+1, 10, 10))
+        info_gain = np.empty(shape=(0, key[3]+1))
         # accumulate date over multiple runs
         for log in log_list:
 
@@ -78,8 +77,8 @@ def merge_similar_runs():
         info_gain_mean = info_gain_mean.tolist()
         info_gain_std = info_gain_std.tolist()
         # create json structure
-        merged_dict = {"Strategy": key[0], "Budget": key[1], "Initial Split": key[2], "Epochs": key[3],
-                       "Iterations": key[4], "Batch Size": key[5], "Learning Rate": key[6], "Target Layer": key[7],
+        merged_dict = {"Strategy": key[0], "Budget": key[1], "Initial Split": key[2],
+                       "Iterations": key[3], "Batch Size": key[4], "Target Layer": key[5],
                        "Accuracy All": acc, "Accuracy Mean": acc_mean, "Accuracy Std": acc_std,
                        "Class Distribution All": class_dist, "Class Distribution Mean": class_dist_mean,
                        "Class Distribution Std": class_dist_std, "Confusion Matrix All": conf_mat,
@@ -87,7 +86,7 @@ def merge_similar_runs():
                        "Information Gain All": info_gain, "Information Gain Mean": info_gain_mean,
                        "Information Gain Std": info_gain_std}
         # generate a filename by settings
-        target_file = Path(f"{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}_{key[5]}_{key[6]}_{key[7]}.json")
+        target_file = Path(f"{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}_{key[5]}.json")
         # create json file
         with Path.joinpath(Path(target_path_base, target_file)).open('w', encoding='utf-8') as file:
             json.dump(merged_dict, file, ensure_ascii=False)
@@ -96,8 +95,8 @@ def merge_similar_runs():
 def create_plots_over_setting(examined_setting, base_setting, ignored_settings=[],  exclude_plot_types=None):
     """
     Creates various plots of runs that differ in exactly one setting, eg. different sampling strategy.
-    :param examined_setting: Setting you want to look into. Options: Strategy, Budget, Initial Split, Epochs,
-     Batch size, Iterations, Learning Rate, Target Layer
+    :param examined_setting: Setting you want to look into. Options: Strategy, Budget, Initial Split,
+     Batch size, Iterations, Target Layer
     :param base_setting: Provides the shared settings, that are constant over all considered log files as a dict.\n
     Alternatively can be provided as the name of a log file. Settings will then be inferred from it.
     :param ignored_settings: List of Settings to ignore while gathering log files. Useful if there are dependencies
@@ -110,8 +109,7 @@ def create_plots_over_setting(examined_setting, base_setting, ignored_settings=[
         exclude_plot_types = {}
     exclude_plot_types = {x.lower() for x in exclude_plot_types}
     plot_base_path = Path("./plots/setting_evaluation_plots")
-    allowed_variable_settings = ["Strategy", "Budget", "Initial Split", "Epochs", "Batch Size", "Iterations",
-                                 "Learning Rate", "Target Layer"]
+    allowed_variable_settings = ["Strategy", "Budget", "Initial Split", "Batch Size", "Iterations", "Target Layer"]
     examined_setting = examined_setting.title()
     if examined_setting in allowed_variable_settings:
         shared_settings = [setting for setting in allowed_variable_settings if examined_setting != setting]
