@@ -70,7 +70,6 @@ class ActiveLearningBench:
         :param logfile: Filename for the json log created for this run
         :param initial_training_size: Number of initially labelled samples
         :param batch_size: Number of samples per gradient update
-        :param epochs: Number of epochs trained between introduction of new samples
         :param budget: Number of samples added in each iteration
         :param iterations: Maximum number of labeling iterations
         :param target_layer: Layer at which activations are extracted
@@ -78,7 +77,9 @@ class ActiveLearningBench:
     """
     def __init__(self, labeling_strategy="random_sampling", logfile="log", initial_training_size=1000, batch_size=32,
                  budget=1000, iterations=20, target_layer=4, vis=False):
+        # Set a torch device. GPU if available.
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        # Ensure all output directories have been created.
         if not Path('./datasets').is_dir():
             Path('./datasets').mkdir()
         if not Path('./plots').is_dir():
@@ -86,36 +87,40 @@ class ActiveLearningBench:
         if not Path('./logs').is_dir():
             Path('./logs').mkdir()
         self.filepath = Path(f'./logs/{logfile}.json')
+        # If the desired filename is already taken, append a number to the filename.
         i = 1
         while Path(self.filepath).is_file():
             self.filepath = Path(f'./logs/{logfile}_{i}.json')
             i += 1
-        # normalize data with mean/std of dataset
+        # normalize data with mean and standard deviation of the dataset.
         self.data_transform = transforms.Compose([transforms.ToTensor(),
                                                   transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
                                                                        (0.24703223, 0.24348513, 0.26158784))])
+        # load the CIFAR test and training sets.
         self.training_set = torchvision.datasets.CIFAR10(root='./datasets', train=True, download=True,
                                                          transform=self.data_transform)
         self.test_set = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True,
                                                      transform=self.data_transform)
         self.labeling_strategy = labeling_strategy
+        # Ensure that the number of initially labelled samples does not exceed the number of available samples.
         self.initial_training_size = min(initial_training_size, len(self.training_set.data)-VALIDATION_SET_SIZE)
         self.batch_size = batch_size
         self.budget = budget
         self.target_layer = target_layer
         self.vis = vis
-        # make sure we don't keep iterating if we run out of samples
+        # make sure we don't keep labelling samples if we run out of samples.
         self.iterations = min(iterations,
-                              int((len(self.training_set.data)-self.initial_training_size - VALIDATION_SET_SIZE) / self.budget))
-        # keep track of dataset indices and which samples have already been labelled
+                              int((len(self.training_set.data)-self.initial_training_size - VALIDATION_SET_SIZE)
+                                  / self.budget))
+        # keep track of indices of labelled and unlabelled samples
         self.unlabelled_idx = np.arange(0, self.training_set.data.shape[0])
-        # pick validation set
+        # select samples for the validation set.
         validation_idx = np.random.choice(self.unlabelled_idx, VALIDATION_SET_SIZE, replace=False)
         self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, validation_idx)
-        # pick initial labelled indices
+        # pick initial labelled indices.
         self.labelled_idx = np.random.choice(self.unlabelled_idx, self.initial_training_size, replace=False)
         self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, self.labelled_idx)
-        # training sampler only samples out of labelled idx
+        # create dataloaders for the labelled samples and the validation set.
         labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set,
                                                         batch_size=self.batch_size,
@@ -128,13 +133,19 @@ class ActiveLearningBench:
         self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set,
                                                        batch_size=EVALUATION_BATCH_SIZE,
                                                        num_workers=2)
-        # for extraction order of samples needs to be preserved
+        # create a dataloader, that keeps the initial order of the dataset, so we can connect network outputs with
+        # specific input indices
         seq_sampler = torch.utils.data.SequentialSampler(self.training_set)
         self.seq_data_loader = torch.utils.data.DataLoader(dataset=self.training_set,
                                                            batch_size=EVALUATION_BATCH_SIZE,
                                                            sampler=seq_sampler, num_workers=2)
 
     def get_trained_model(self):
+        """
+        Trains a model on all labelled samples until validation loss stops decreasing
+        :return: trained model
+        """
+        # Initialize model and optimization tools.
         model = SimpleCNN()
         model.to(self.device)
         best_validation_model = None
@@ -179,14 +190,16 @@ class ActiveLearningBench:
                 average_validation_loss /= (VALIDATION_SET_SIZE / EVALUATION_BATCH_SIZE)
                 lr_scheduler.step(average_validation_loss)
                 print(f"Validation loss: {average_validation_loss:.3f}")
+            # check for validation loss improvement
             if average_validation_loss < min_validation_loss:
                 min_validation_loss = average_validation_loss
+                # create checkpoint of model with lowest validation loss so far
                 best_validation_model = model.state_dict()
                 epochs_without_validation_improvement = 0
             else:
                 epochs_without_validation_improvement += 1
             if epochs_without_validation_improvement == EARLY_STOPPING_PATIENCE:
-                # keep the net
+                # load checkpoint with lowest validation loss
                 model.load_state_dict(best_validation_model)
                 print(f"Training completed after {epoch} epochs.")
                 return model, criterion
@@ -200,59 +213,67 @@ class ActiveLearningBench:
         :return: accuracy, confusion_matrix
         """
         model.eval()
-        correct = 0
-        total = 0
+
         with torch.no_grad():
+            # initialize statistics containers
+            correct_per_class = np.zeros(len(self.test_set.classes))
+            total_per_class = np.zeros(len(self.test_set.classes))
+            accuracy_per_class = []
             confusion_matrix = torch.zeros(size=(len(self.test_set.classes), len(self.test_set.classes)))
             for batch in self.test_loader:
                 images, labels = batch[0].to(self.device), batch[1].to(self.device)
                 outputs = model(images)
                 _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
+                for label in labels:
+                    total_per_class[label] += 1
                 for tup in torch.stack([predicted, labels], dim=1):
                     confusion_matrix[tup[0]][tup[1]] += 1
-                correct += (predicted == labels).sum().item()
-
-        print(f'Accuracy of the network on the {len(self.test_set.data)} test images: {100 * correct / total:.2f}%')
+                    if tup[0] == tup[1]:
+                        correct_per_class[tup[0]] += 1
+            accuracy_all = np.sum(correct_per_class)/np.sum(total_per_class)
+            for class_idx in range(len(self.test_set.classes)):
+                accuracy_per_class.append(correct_per_class[class_idx]/total_per_class[class_idx])
+        print(f'Accuracy of the network on the {len(self.test_set.data)} test images: {100 * accuracy_all:.2f}%')
         confusion_matrix /= len(self.test_set.data)
-        return correct/total, confusion_matrix.tolist()
+        return accuracy_all, accuracy_per_class, confusion_matrix.tolist()
 
-    def greedy_k_center(self, activations, loss):
+    def greedy_k_center(self, activations, losses, confidences):
         """
-                greedy k center strategy
-                :param activations:
-                :return:
-                """
-        # unlabelled_data , labelled_data are in modified index order
+        Greedy k center strategy
+        :param activations: network activations of hooked layer
+        :param losses: not used
+        :param confidences: not used
+        :return:
+        """
+        # get activations of labelled and unlabelled samples
         unlabelled_data = activations[self.unlabelled_idx]
         labelled_data = activations[self.labelled_idx]
-        # create distance matrix axis 0 is unlabelled data 1 is labelled data
+        # create distance matrix: axis 0 is unlabelled data 1 is labelled data
         distance_matrix = torch.cdist(unlabelled_data, labelled_data)
-        # for each unlabelled date find min distance to labelled
+        # for each unlabelled sample find the minimal distance to any labelled sample
         min_dist, _ = torch.min(distance_matrix, dim=1)
         for i in range(self.budget):
-            # find index of largest min_dist entry
+            # find index of the sample with the largest minimal distance to any labelled sample
             idx = torch.argmax(min_dist).to("cpu").item()
-            # min_dist is in index modified order, so to find original order index use index list
+            # get idx in original dataset order, which will be appended to the labelled_idx list
             new_sample_idx = self.unlabelled_idx[idx]
             # get data of new labelled sample
             new_sample_data = unlabelled_data[idx]
-            # we delete this index out of unlabelled_idx and add it to labelled_idx this changes modified idx order
+            # delete this index out of unlabelled_idx and add it to labelled_idx,
+            # we need to make the same change to our unlabelled data container
             self.unlabelled_idx = np.delete(self.unlabelled_idx, idx)
-            # add the original index of the new sample to the labelled indices
             self.labelled_idx = np.append(self.labelled_idx, new_sample_idx)
-            # we also delete the data row, this makes same change to modified idx order balancing out
             unlabelled_data = torch.cat((unlabelled_data[0:idx], unlabelled_data[idx + 1:]), dim=0)
-            # Finally delete out of distance list, same change to mod idx order
+            # Finally also delete the corresponding entry from the minimal distance list
             min_dist = torch.cat((min_dist[0:idx], min_dist[idx + 1:]), dim=0)
-            # now we need to see if sampling has minimized any min distances to labelled samples
-            # finally calc min over 2 values
+            # now we need to check if labelling has minimized any minimal distances to labelled samples
+            # 3.) finally calc min over 2 values
             min_dist, _ = \
                 torch.min(
-                    # add distances to new sample to old min distance_matrix values shape(x,1) -> (x,2)
+                    # 2.) add distances to new sample to old min distance_matrix values shape(x,1) -> (x,2)
                     torch.cat((
                         torch.reshape(min_dist, (-1, 1)),
-                        # first calc distance from unlabelled to new sample
+                        # 1.) first calculate distance from unlabelled to new sample
                         torch.cdist(unlabelled_data, torch.reshape(new_sample_data, (1, -1)))),
                         dim=1),
                     dim=1)
@@ -262,36 +283,70 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
 
-    def spatial_loss_sampling(self, activations, loss):
+    def spatial_loss_sampling(self, activations, losses, confidences):
+        """
+        Calculates a predicted loss for unlabelled samples, based on losses of surrounding labelled samples.
+        The selects samples for labelling, favoring samples with high predictes loss.
+        :param activations: activations at hooked layer
+        :param losses: losses (only uses losses of labelled samples)
+        :param confidences: not used
+        :return:
+        """
         with torch.no_grad():
+            # get activations of unlabelled and labelled samples.
             unlabelled_data = activations[self.unlabelled_idx]
             labelled_data = activations[self.labelled_idx]
-            loss = loss[self.labelled_idx]
-            loss = loss.squeeze()
+            # get losses for labelled samples.
+            losses = losses[self.labelled_idx]
+            losses = losses.squeeze()
             # create distance matrix axis 0 is unlabelled data 1 is labelled data
             distance_matrix = torch.cdist(unlabelled_data, labelled_data)
-            # use inverted squared distance to strongly favor close samples
+            # calculate inverted squared distances. Later used as weights for surrounding losses.
             distance_matrix.pow_(2)
             distance_matrix.reciprocal_()
-            # normalize distances so samples with near neighbours do not get higher loss automatically
+            # normalize inverted squared distances, so the loss weights for each samples add up to 1.
             F.normalize(distance_matrix, p=1, dim=1, out=distance_matrix)
-            # create predicted loss by weighing neighbouring loss values with distance
-            predicted_loss = torch.matmul(distance_matrix, loss)
-            # normalize to get probability distribution
+            # create predicted loss by weighing neighbouring losses values with their inverted squared distances
+            predicted_loss = torch.matmul(distance_matrix, losses)
+            # normalize again to get a probability distribution
             F.normalize(predicted_loss, p=1, dim=0, out=predicted_loss)
             predicted_loss = predicted_loss.to("cpu").numpy()
-            # get new samples be randomly drawing with
+            # randomly draw new samples to label, using the normalized predicted loss as distribution
             added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False, p=predicted_loss)
-
+            # add new samples and update the dataloaders accordingly
             self.update_train_loader(added_samples)
 
-    def random_sampling(self, activations, loss):
+    def low_confidence_sampling(self, activations, losses, confidences):
+        """
+        Selects new samples to label based on the networks certainty for the samples. Network uncertainty is considered
+        lowest, if the maximum probability for any class is minimal. Selects the samples the network is most uncertain
+        about
+        :param activations: not used
+        :param losses: not used
+        :param confidences: softmaxed output of the last network layer
+        :return:
+        """
+        with torch.no_grad():
+            # get certainties for unlabelled samples
+            unlabelled_confidences = confidences[self.unlabelled_idx]
+            # find highest certainty for any class, for each sample
+            unlabelled_max_confidences, _ = torch.max(unlabelled_confidences, dim=1)
+            # get indices of k samples with lowest maximum certainty
+            _, lowest_max_confidence_indices = torch.topk(unlabelled_max_confidences, self.budget, largest=False)
+            # get indices based on original dataset order
+            added_samples = self.unlabelled_idx[lowest_max_confidence_indices]
+            # add new samples and update dataloaders accordingly
+            self.update_train_loader(added_samples)
+
+    def random_sampling(self, activations, losses, confidences):
         """
         random sampling strategy
         :param activations: vector data is not used in this strategy
         :return:
         """
+        # randomly draw new samples
         added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False)
+        # add new samples and update dataloaders
         self.update_train_loader(added_samples)
 
     def update_train_loader(self, added_samples):
@@ -317,11 +372,11 @@ class ActiveLearningBench:
         model.eval()
         hook = None
         num_features = 1
-        # install forward hook
+        # install a forward hook at the target layer
         for i, layer in enumerate(model._modules.items()):
             if i == self.target_layer:
                 hook = Hook(layer[1])
-                # run random image through network to get output size of layer
+                # run random image through network to get output size of the target layer
                 model(torch.zeros((1, 3, 32, 32)).to(self.device))
                 for k in range(1, len(hook.output.size())):
                     num_features *= hook.output.size()[k]
@@ -329,21 +384,26 @@ class ActiveLearningBench:
         with torch.no_grad():
             # initialize containers for data
             activation_all = torch.empty(size=(0, num_features), device=self.device)
+            output_all = torch.empty(size=(0, len(self.training_set.classes)), device=self.device)
             loss_all = torch.empty(size=(len(self.training_set.data), 1), device=self.device)
             # iterate over entire dataset in order
             for i, sample in enumerate(self.seq_data_loader, 0):
                 image, label = sample[0].to(self.device), sample[1].to(self.device)
                 # run forward, get activations from forward hook
                 out = model(image)
-                # flatten hooked activations - conv layer outputs are not flat by default
+                # flatten hooked activations - convolutional layer outputs are not flat by default
                 activations = hook.output.view(-1, num_features)
-                # gather activations
+                # gather activations of hooked layer
                 activation_all = torch.cat((activation_all, activations), 0)
+                # gather activations of final layer
+                output_all = torch.cat((output_all, out), 0)
                 for j in range(out.size()[0]):
-                    # force loss_fn to calculate for each sample separately
+                    # force loss function to calculate loss for each sample individually
                     loss_all[i*EVALUATION_BATCH_SIZE+j] = criterion(out[j].unsqueeze(0), label[j].unsqueeze(0))
+            # softmax the final network activations to get confidence values for each class
+            confidence_all = F.softmax(output_all, dim=1)
         hook.close()
-        return activation_all, loss_all
+        return activation_all, loss_all, confidence_all
 
     def visualize(self, activations, loss, iteration):
         """
@@ -402,39 +462,44 @@ class ActiveLearningBench:
         run program
         :return:
         """
-        accuracy = []
-        class_distribution = []
-        confusion_matrix = []
+        # initialize logging lists for various tracked parameters
+        accuracy_log = []
+        accuracy_per_class_log = []
+        class_distribution_log = []
+        confusion_matrix_log = []
         # main loop
         for i in range(self.iterations):
             # fully train model
             model, criterion = self.get_trained_model()
             # benchmark
-            acc, confuse = self.test(model)
-            accuracy.append(acc)
-            confusion_matrix.append(confuse)
-            class_distribution.append(self.get_class_distribution())
-            # get vec representation
-            act, loss = self.create_vector_rep(model, criterion)
+            accuracy, accuracy_per_class, confusion_matrix = self.test(model)
+            accuracy_log.append(accuracy)
+            accuracy_per_class_log.append(accuracy)
+            confusion_matrix_log.append(confusion_matrix)
+            class_distribution_log.append(self.get_class_distribution())
+            # get vector representation
+            activations, losses, confidences = self.create_vector_rep(model, criterion)
             if self.vis:
-                self.visualize(act, loss, i)
+                self.visualize(activations, losses, i)
             # use selected sampling strategy
             print("Select samples for labelling")
-            self.__getattribute__(self.labeling_strategy)(act, loss)
+            self.__getattribute__(self.labeling_strategy)(activations, losses, confidences)
         # evaluation after last samples have been added
         model, criterion = self.get_trained_model()
-        acc, confuse = self.test(model)
-        accuracy.append(acc)
-        confusion_matrix.append(confuse)
-        class_distribution.append(self.get_class_distribution())
+        accuracy, accuracy_per_class, confusion_matrix = self.test(model)
+        accuracy_log.append(accuracy)
+        accuracy_per_class_log.append(accuracy_per_class)
+        confusion_matrix_log.append(confusion_matrix)
+        class_distribution_log.append(self.get_class_distribution())
         if self.vis:
-            act, loss = self.create_vector_rep(model, criterion)
-            self.visualize(act, loss, self.iterations)
+            activations, losses, confidences = self.create_vector_rep(model, criterion)
+            self.visualize(activations, losses, self.iterations)
         # create log file
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Iterations': self.iterations, 'Batch Size': self.batch_size,
-               'Target Layer': self.target_layer, 'Accuracy': accuracy,
-               'Class Distribution': class_distribution, 'Confusion Matrix': confusion_matrix}
+               'Target Layer': self.target_layer, 'Accuracy': accuracy_log,
+               'Accuracy Per Class': accuracy_per_class_log, 'Class Distribution': class_distribution_log,
+               'Confusion Matrix': confusion_matrix_log}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
             file.close()

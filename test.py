@@ -8,6 +8,7 @@ from scipy import spatial
 class FrameworkDummy:
 
     def __init__(self):
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.unlabelled_idx = np.asarray([0, 2, 3, 4, 7, 8, 9])
         self.labelled_idx = np.asarray([5, 1, 6])
         self.activations = torch.tensor([[1., 9.],
@@ -19,8 +20,29 @@ class FrameworkDummy:
                                          [7., 7.],
                                          [9., 9.],
                                          [9., 3.],
-                                         [10., 7.]]).to("cuda:0")
-        self.loss = torch.tensor([3., 2., 3., 2., 4., 1., 2., 2., 1., 3.]).to("cuda:0")
+                                         [10., 7.]]).to(self.device)
+        self.confidences = torch.tensor(
+                [[0.1174, 0.0715, 0.0753, 0.1045, 0.0718, 0.0887, 0.0730, 0.0727, 0.1530,   # 17.22 u 7 - 0
+                 0.1722],
+                 [0.1095, 0.1520, 0.0683, 0.0779, 0.0717, 0.1250, 0.0746, 0.0753, 0.1223,   # 12.50
+                 0.1234],
+                 [0.0793, 0.0937, 0.0956, 0.1133, 0.1153, 0.0863, 0.0760, 0.1620, 0.0811,   # 16.20 u 6 - 2
+                 0.0975],
+                 [0.0604, 0.1313, 0.0800, 0.1207, 0.0806, 0.1187, 0.1077, 0.0603, 0.0948,   # 14.54 u 2 - 3
+                 0.1454],
+                 [0.0931, 0.1574, 0.0630, 0.1146, 0.0795, 0.0738, 0.0943, 0.1475, 0.0775,   # 15.74 u 5 - 4
+                 0.0994],
+                 [0.0657, 0.1229, 0.1163, 0.1013, 0.1116, 0.1130, 0.0734, 0.1187, 0.1113,   # 12.29
+                 0.0658],
+                 [0.1057, 0.0817, 0.1101, 0.1016, 0.0917, 0.0790, 0.1516, 0.0629, 0.1017,   # 15.16
+                 0.1139],
+                 [0.0877, 0.1135, 0.0720, 0.1558, 0.0699, 0.1171, 0.0759, 0.1413, 0.0887,   # 15.58 u 4 - 7
+                 0.0782],
+                 [0.1192, 0.1312, 0.1439, 0.0960, 0.0786, 0.1291, 0.0753, 0.0724, 0.0808,   # 14.39 u 1 - 8
+                 0.0735],
+                 [0.1377, 0.0848, 0.0984, 0.0763, 0.0638, 0.1365, 0.1018, 0.1489, 0.0597,   # 14.89 u 3 - 9
+                 0.0921]]).to(self.device)
+        self.loss = torch.tensor([3., 2., 3., 2., 4., 1., 2., 2., 1., 3.]).to(self.device)
         self.loss = self.loss.unsqueeze(dim=1)
         self.budget = 4
 
@@ -129,6 +151,7 @@ class FrameworkDummy:
         # normalize to get probability distribution
         predicted_loss = torch.nn.functional.normalize(predicted_loss, p=1, dim=0).to("cpu").numpy()
         # get new samples be randomly drawing with
+        print(predicted_loss)
         added_samples = np.random.choice(self.unlabelled_idx, self.budget, replace=False, p=predicted_loss)
         print(added_samples)
 
@@ -139,6 +162,19 @@ class FrameworkDummy:
         self.labelled_idx = np.append(self.labelled_idx, added_samples)
         print(self.unlabelled_idx)
         print(self.labelled_idx)
+
+    def low_confidence_sampling(self, confidences):
+        with torch.no_grad():
+            unlabelled_confidences = confidences[self.unlabelled_idx]
+            print(unlabelled_confidences)
+            unlabelled_max_confidences, _ = torch.max(unlabelled_confidences, dim=1)
+            print(unlabelled_max_confidences)
+            _, lowest_max_confidence_indices = torch.topk(unlabelled_max_confidences, self.budget, largest=False)
+            added_samples = self.unlabelled_idx[lowest_max_confidence_indices]
+            print(added_samples)
+
+            self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, added_samples)
+            self.labelled_idx = np.append(self.labelled_idx, added_samples)
 
 
 class KCenterTest(unittest.TestCase):
@@ -156,13 +192,22 @@ class KCenterTest(unittest.TestCase):
         self.assertEqual(fd.unlabelled_idx.tolist(), [3, 7, 8])
 
 
-class SpatialLoss(unittest.TestCase):
+class SpatialLossTest(unittest.TestCase):
 
     def test_spatial_impl(self):
         fd = FrameworkDummy()
         fd.spatial_loss_sampling(fd.activations, fd.loss)
         # need some test conditions :P it does work though
         # if promising implement iterative version
+
+
+class UncertaintyTest(unittest.TestCase):
+
+    def test_uncertainty_impl(self):
+        fd = FrameworkDummy()
+        fd.low_confidence_sampling(fd.confidences)
+        self.assertEqual(fd.unlabelled_idx.tolist(), [0, 2, 4])
+        self.assertCountEqual(fd.labelled_idx.tolist(), [1, 3, 5, 6, 7, 8, 9])
 
 
 if __name__ == '__main__':
