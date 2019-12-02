@@ -218,7 +218,7 @@ class ActiveLearningBench:
             # initialize statistics containers
             correct_per_class = np.zeros(len(self.test_set.classes))
             total_per_class = np.zeros(len(self.test_set.classes))
-            accuracy_per_class = []
+            recall_per_class = []
             confusion_matrix = torch.zeros(size=(len(self.test_set.classes), len(self.test_set.classes)))
             for batch in self.test_loader:
                 images, labels = batch[0].to(self.device), batch[1].to(self.device)
@@ -232,10 +232,10 @@ class ActiveLearningBench:
                         correct_per_class[tup[0]] += 1
             accuracy_all = np.sum(correct_per_class)/np.sum(total_per_class)
             for class_idx in range(len(self.test_set.classes)):
-                accuracy_per_class.append(correct_per_class[class_idx]/total_per_class[class_idx])
+                recall_per_class.append(correct_per_class[class_idx]/total_per_class[class_idx])
         print(f'Accuracy of the network on the {len(self.test_set.data)} test images: {100 * accuracy_all:.2f}%')
         confusion_matrix /= len(self.test_set.data)
-        return accuracy_all, accuracy_per_class, confusion_matrix.tolist()
+        return accuracy_all, recall_per_class, confusion_matrix.tolist()
 
     def greedy_k_center(self, activations, losses, confidences):
         """
@@ -464,7 +464,7 @@ class ActiveLearningBench:
         """
         # initialize logging lists for various tracked parameters
         accuracy_log = []
-        accuracy_per_class_log = []
+        recall_per_class_log = []
         class_distribution_log = []
         confusion_matrix_log = []
         # main loop
@@ -472,9 +472,9 @@ class ActiveLearningBench:
             # fully train model
             model, criterion = self.get_trained_model()
             # benchmark
-            accuracy, accuracy_per_class, confusion_matrix = self.test(model)
+            accuracy, recall_per_class, confusion_matrix = self.test(model)
             accuracy_log.append(accuracy)
-            accuracy_per_class_log.append(accuracy_per_class)
+            recall_per_class_log.append(recall_per_class)
             confusion_matrix_log.append(confusion_matrix)
             class_distribution_log.append(self.get_class_distribution())
             # get vector representation
@@ -486,9 +486,9 @@ class ActiveLearningBench:
             self.__getattribute__(self.labeling_strategy)(activations, losses, confidences)
         # evaluation after last samples have been added
         model, criterion = self.get_trained_model()
-        accuracy, accuracy_per_class, confusion_matrix = self.test(model)
+        accuracy, recall_per_class, confusion_matrix = self.test(model)
         accuracy_log.append(accuracy)
-        accuracy_per_class_log.append(accuracy_per_class)
+        recall_per_class_log.append(recall_per_class)
         confusion_matrix_log.append(confusion_matrix)
         class_distribution_log.append(self.get_class_distribution())
         if self.vis:
@@ -498,7 +498,7 @@ class ActiveLearningBench:
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Iterations': self.iterations, 'Batch Size': self.batch_size,
                'Target Layer': self.target_layer, 'Accuracy': accuracy_log,
-               'Accuracy Per Class': accuracy_per_class_log, 'Class Distribution': class_distribution_log,
+               'Recall Per Class': recall_per_class_log, 'Class Distribution': class_distribution_log,
                'Confusion Matrix': confusion_matrix_log}
         with self.filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
