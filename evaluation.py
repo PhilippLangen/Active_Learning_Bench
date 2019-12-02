@@ -42,6 +42,7 @@ def merge_similar_runs():
     for key, log_list in log_map.items():
         # initialize data containers
         acc = np.empty(shape=(0, key[3]+1))
+        acc_per_class = np.empty(shape=(0, key[3]+1, 10))
         class_dist = np.empty(shape=(0, key[3]+1, 10))
         conf_mat = np.empty(shape=(0, key[3]+1, 10, 10))
         info_gain = np.empty(shape=(0, key[3]+1))
@@ -49,6 +50,7 @@ def merge_similar_runs():
         for log in log_list:
 
             acc = np.append(acc, np.expand_dims(np.asarray(log["Accuracy"]), axis=0), axis=0)
+            acc_per_class = np.append(acc_per_class, np.expand_dims(np.asarray(log["Accuracy Per Class"]), axis=0), axis=0)
             class_dist = np.append(class_dist, np.expand_dims(np.asarray(log["Class Distribution"]), axis=0), axis=0)
             conf_mat = np.append(conf_mat, np.expand_dims(np.asarray(log["Confusion Matrix"]), axis=0), axis=0)
             info_gain = np.append(info_gain,
@@ -59,6 +61,8 @@ def merge_similar_runs():
         class_dist_mean = np.mean(class_dist, axis=0)
         acc_std = np.std(acc, axis=0)
         class_dist_std = np.std(class_dist, axis=0)
+        acc_per_class_std = np.std(acc_per_class, axis=0)
+        acc_per_class_mean = np.mean(acc_per_class, axis=0)
         conf_mat_mean = np.mean(conf_mat, axis=0)
         conf_mat_std = np.std(conf_mat, axis=0)
         info_gain_mean = np.mean(info_gain, axis=0)
@@ -67,6 +71,9 @@ def merge_similar_runs():
         acc = acc.tolist()
         acc_mean = acc_mean.tolist()
         acc_std = acc_std.tolist()
+        acc_per_class = acc_per_class.tolist()
+        acc_per_class_mean = acc_per_class_mean.tolist()
+        acc_per_class_std = acc_per_class_std.tolist()
         class_dist = class_dist.tolist()
         class_dist_mean = class_dist_mean.tolist()
         class_dist_std = class_dist_std.tolist()
@@ -84,7 +91,8 @@ def merge_similar_runs():
                        "Class Distribution Std": class_dist_std, "Confusion Matrix All": conf_mat,
                        "Confusion Matrix Mean": conf_mat_mean, "Confusion Matrix Std": conf_mat_std,
                        "Information Gain All": info_gain, "Information Gain Mean": info_gain_mean,
-                       "Information Gain Std": info_gain_std}
+                       "Information Gain Std": info_gain_std, "Accuracy Per Class All": acc_per_class,
+                       "Accuracy Per Class Mean": acc_per_class_mean, "Accuracy Per Class Std": acc_per_class_std}
         # generate a filename by settings
         target_file = Path(f"{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}_{key[5]}.json")
         # create json file
@@ -291,10 +299,35 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
         create_confusion_matrix_plot(conf_data,
                                      out_base_path=Path.joinpath(plot_base_path, Path("Confusion_Matrix_Mean")),
                                      out_filename="Confusion_Matrix_Plot")
+    if "distribution accuracy correlation" not in exclude_plot_types:
+        print("Creating class distribution accuracy correlation plots.")
+        distribution_accuracy_base_path = Path.joinpath(plot_base_path, Path("Class_Accuracy_Distribution"))
+        if not Path(distribution_accuracy_base_path).is_dir():
+            distribution_accuracy_base_path.mkdir()
+        class_distribution_data = np.asarray(log_data["Class Distribution All"])
+        class_accuracy_data = np.asarray(log_data["Accuracy Per Class All"])
+        class_distribution_data = class_distribution_data.swapaxes(0, 1).swapaxes(1, 2)
+        class_accuracy_data = class_accuracy_data.swapaxes(0, 1).swapaxes(1, 2)
 
-    # individual plots
-    print("Creating individual plots..")
+        y_bounds = (np.min(class_distribution_data) - ((np.max(class_distribution_data)
+                                                        - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR),
+                    np.max(class_distribution_data) + ((np.max(class_distribution_data)
+                                                        - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR))
+        x_bounds = (np.min(class_accuracy_data) - ((np.max(class_accuracy_data)
+                                                    - np.min(class_accuracy_data)) / PLOT_PADDING_FACTOR),
+                    np.max(class_accuracy_data) + ((np.max(class_accuracy_data)
+                                                    - np.min(class_accuracy_data)) / PLOT_PADDING_FACTOR))
+        for iteration in range(class_accuracy_data.shape[0]):
+            create_scatter_plot(class_accuracy_data[iteration], class_distribution_data[iteration],
+                                out_path=Path.joinpath(distribution_accuracy_base_path,
+                                                       Path(f"Class_Accuracy_Distribution_Plot_{iteration}.png")),
+                                group_labels=CIFAR_CLASSES, colors=np.asarray(plt.get_cmap("tab10").colors),
+                                x_bounds=x_bounds, y_bounds=y_bounds, show_legend=False,
+                                title=f"Class Distribution - Class Accuracy Iteration {iteration}")
+
     if plot_individual_runs:
+        # individual plots
+        print("Creating individual plots..")
         individual_plot_path = Path.joinpath(plot_base_path, Path("individual_runs"))
         # accuracy
         if "accuracy" not in exclude_plot_types:
@@ -382,6 +415,24 @@ def create_line_plot(x_data, y_data, out_path, labels=None, error=None, x_bounds
         ax.set_title(title)
         plt.savefig(out_path, dpi=200, bbox_inches='tight')
         plt.close(fig)
+
+
+def create_scatter_plot(x_data, y_data, out_path, group_labels,
+                        title="Class Distribution Accuracy Correlation", x_label="Accuracy",
+                        y_label="Class Distribution", x_bounds=None, y_bounds=None, colors=None, show_legend=True):
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for group_idx in range(x_data.shape[0]):
+        ax.scatter(x_data[group_idx], y_data[group_idx],alpha=0.8, c=np.expand_dims(colors[group_idx], 0), s=30,
+                   label=group_labels[group_idx])
+    if show_legend:
+        ax.legend(loc='lower right')
+    ax.set_ylim(y_bounds)
+    ax.set_xlim(x_bounds)
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+    plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
 
 
 def create_class_dist_plot(data, out_base_path, out_filename, labels=None, error=None, title="Class Distribution",

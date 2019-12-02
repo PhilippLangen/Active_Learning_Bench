@@ -15,7 +15,7 @@ from sklearn.decomposition import PCA
 VALIDATION_SET_SIZE = 5000
 EVALUATION_BATCH_SIZE = 100
 MAX_EPOCHS = 400
-LR_UPDATE_PATIENCE = 3
+LR_UPDATE_PATIENCE = 10
 LR_COOLDOWN = 5
 EARLY_STOPPING_PATIENCE = 15
 LEARNING_RATE = 0.001
@@ -334,7 +334,7 @@ class ActiveLearningBench:
             # get indices of k samples with lowest maximum certainty
             _, lowest_max_confidence_indices = torch.topk(unlabelled_max_confidences, self.budget, largest=False)
             # get indices based on original dataset order
-            added_samples = self.unlabelled_idx[lowest_max_confidence_indices]
+            added_samples = self.unlabelled_idx[lowest_max_confidence_indices.to("cpu").numpy()]
             # add new samples and update dataloaders accordingly
             self.update_train_loader(added_samples)
 
@@ -474,7 +474,7 @@ class ActiveLearningBench:
             # benchmark
             accuracy, accuracy_per_class, confusion_matrix = self.test(model)
             accuracy_log.append(accuracy)
-            accuracy_per_class_log.append(accuracy)
+            accuracy_per_class_log.append(accuracy_per_class)
             confusion_matrix_log.append(confusion_matrix)
             class_distribution_log.append(self.get_class_distribution())
             # get vector representation
