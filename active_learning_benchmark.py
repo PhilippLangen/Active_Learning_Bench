@@ -378,8 +378,8 @@ class ActiveLearningBench:
                 hook = Hook(layer[1])
                 # run random image through network to get output size of the target layer
                 model(torch.zeros((1, 3, 32, 32)).to(self.device))
-                for k in range(1, len(hook.output.size())):
-                    num_features *= hook.output.size()[k]
+                for k in range(1, len(hook.input[0].size())):
+                    num_features *= hook.input[0].size()[k]
         print("Creating vector representation of training set")
         with torch.no_grad():
             # initialize containers for data
@@ -392,7 +392,7 @@ class ActiveLearningBench:
                 # run forward, get activations from forward hook
                 out = model(image)
                 # flatten hooked activations - convolutional layer outputs are not flat by default
-                activations = hook.output.view(-1, num_features)
+                activations = hook.input[0].view(-1, num_features)
                 # gather activations of hooked layer
                 activation_all = torch.cat((activation_all, activations), 0)
                 # gather activations of final layer
