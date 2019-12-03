@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import fire
+import numpy as np
 
 from active_learning_benchmark import ActiveLearningBench
 
@@ -48,9 +49,31 @@ def run_queue(queue_json):
                 with queue_file.open('w', encoding='utf-8') as modified_file:
                     json.dump(queue, modified_file, ensure_ascii=False)
                     file.close()
+    else:
+        print(f"{queue_json} not found!")
+
+
+def split_workload(queue_json, num_splits):
+    queue_file = Path(queue_json)
+    workload = []
+    if queue_file.is_file():
+        with queue_file.open() as file:
+            workload = np.asarray(json.load(file))
+            file.close()
+    else:
+        print(f"{queue_json} not found!")
+    work_splits = np.array_split(workload, num_splits)
+    for work_split_index, work_split in enumerate(work_splits):
+        work_split_list = work_split.tolist()
+        work_split_filename = queue_json[:-5]
+        work_split_filename = f"{work_split_filename}_part_{work_split_index}.json"
+        with Path(work_split_filename).open('w', encoding='utf-8') as split_file:
+            json.dump(work_split_list, split_file)
+            split_file.close()
 
 
 if __name__ == '__main__':
     fire.Fire({'add_new_jobs': add_new_jobs,
-               'run_queue': run_queue
+               'run_queue': run_queue,
+               'split_workload': split_workload
                })

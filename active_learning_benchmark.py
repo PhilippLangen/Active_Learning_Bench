@@ -86,12 +86,7 @@ class ActiveLearningBench:
             Path('./plots').mkdir()
         if not Path('./logs').is_dir():
             Path('./logs').mkdir()
-        self.filepath = Path(f'./logs/{logfile}.json')
-        # If the desired filename is already taken, append a number to the filename.
-        i = 1
-        while Path(self.filepath).is_file():
-            self.filepath = Path(f'./logs/{logfile}_{i}.json')
-            i += 1
+        self.logfile = logfile
         # normalize data with mean and standard deviation of the dataset.
         self.data_transform = transforms.Compose([transforms.ToTensor(),
                                                   transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
@@ -500,7 +495,13 @@ class ActiveLearningBench:
                'Target Layer': self.target_layer, 'Accuracy': accuracy_log,
                'Recall Per Class': recall_per_class_log, 'Class Distribution': class_distribution_log,
                'Confusion Matrix': confusion_matrix_log}
-        with self.filepath.open('w', encoding='utf-8') as file:
+        # If the desired filename is already taken, append a number to the filename.
+        filepath = Path(f'./logs/{self.logfile}.json')
+        i = 1
+        while Path(filepath).is_file():
+            filepath = Path(f'./logs/{self.logfile}_{i}.json')
+            i += 1
+        with filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
             file.close()
 
