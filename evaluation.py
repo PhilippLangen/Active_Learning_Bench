@@ -251,6 +251,7 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
     logfile = Path(f"{MERGED_LOGS_PATH}/{merged_logfile}")
     if not logfile.is_file():
         print(f"invalid filename: {logfile} does not exist!")
+        raise SystemExit
     with logfile.open() as json_file:
         log_data = json.load(json_file)
     plot_base_path = Path(f"./plots/single_setting_plots/{merged_logfile[:-5]}")
@@ -301,14 +302,26 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
                                      out_filename="Confusion_Matrix_Plot")
     if "distribution recall correlation" not in exclude_plot_types:
         print("Creating class distribution recall correlation plots.")
-        distribution_recall_base_path = Path.joinpath(plot_base_path, Path("Class_Accuracy_Distribution"))
+        distribution_recall_base_path = Path.joinpath(plot_base_path, Path("Class_Recall_Distribution"))
         if not Path(distribution_recall_base_path).is_dir():
             distribution_recall_base_path.mkdir()
         class_distribution_data = np.asarray(log_data["Class Distribution All"])
-        class_recall_data = np.asarray(log_data["Recall Per Class All"])
+        # class recall can be calculated by dividing number of true positives of class
+        # (entry in diagonal of confusion matrix) by the number of samples with true label(TP + FN) of said class
+        # (row in confusion matrix)
+        confusion_matrix_data = np.asarray(log_data["Confusion Matrix All"])
+        # axis = 0 run , axis = 1 iteration, axis 2 = true labels, axis 3 = predicted labels
+        summed_confusion_matrix_data = np.sum(confusion_matrix_data, axis=2)
+        class_recall_data = np.empty((confusion_matrix_data.shape[0], confusion_matrix_data.shape[1], len(CIFAR_CLASSES)))
+        for run_idx in range(confusion_matrix_data.shape[0]):
+            for iteration_idx in range(confusion_matrix_data.shape[1]):
+                for class_idx in range(len(CIFAR_CLASSES)):
+                    class_recall_data[run_idx][iteration_idx][class_idx] = \
+                        confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx] / \
+                        summed_confusion_matrix_data[run_idx][iteration_idx][class_idx]
         class_distribution_data = class_distribution_data.swapaxes(0, 1).swapaxes(1, 2)
         class_recall_data = class_recall_data.swapaxes(0, 1).swapaxes(1, 2)
-
+        # calculate plot bounds
         y_bounds = (np.min(class_distribution_data) - ((np.max(class_distribution_data)
                                                         - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR),
                     np.max(class_distribution_data) + ((np.max(class_distribution_data)
@@ -317,6 +330,7 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
                                                     - np.min(class_recall_data)) / PLOT_PADDING_FACTOR),
                     np.max(class_recall_data) + ((np.max(class_recall_data)
                                                     - np.min(class_recall_data)) / PLOT_PADDING_FACTOR))
+
         for iteration in range(class_recall_data.shape[0]):
             create_scatter_plot(class_recall_data[iteration], class_distribution_data[iteration],
                                 out_path=Path.joinpath(distribution_recall_base_path,
@@ -325,6 +339,85 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
                                 x_bounds=x_bounds, y_bounds=y_bounds, show_legend=False,
                                 title=f"Class Distribution - Class Recall Iteration {iteration}")
 
+    if "distribution precision correlation" not in exclude_plot_types:
+        print("Creating class distribution precision correlation plots.")
+        distribution_precision_base_path = Path.joinpath(plot_base_path, Path("Class_Precision_Distribution"))
+        if not Path(distribution_precision_base_path).is_dir():
+            distribution_precision_base_path.mkdir()
+        class_distribution_data = np.asarray(log_data["Class Distribution All"])
+        # class precision can be calculated by dividing number of true positives of class
+        # (entry in diagonal of confusion matrix) by the number of samples with true label(TP + FP) of said class
+        # (column in confusion matrix)
+        confusion_matrix_data = np.asarray(log_data["Confusion Matrix All"])
+        # axis = 0 run , axis = 1 iteration, axis 2 = true labels, axis 3 = predicted labels
+        summed_confusion_matrix_data = np.sum(confusion_matrix_data, axis=3)
+        class_precision_data = np.empty((confusion_matrix_data.shape[0], confusion_matrix_data.shape[1], len(CIFAR_CLASSES)))
+        for run_idx in range(confusion_matrix_data.shape[0]):
+            for iteration_idx in range(confusion_matrix_data.shape[1]):
+                for class_idx in range(len(CIFAR_CLASSES)):
+                    class_precision_data[run_idx][iteration_idx][class_idx] = \
+                        confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx] / \
+                        summed_confusion_matrix_data[run_idx][iteration_idx][class_idx]
+        class_distribution_data = class_distribution_data.swapaxes(0, 1).swapaxes(1, 2)
+        class_precision_data = class_precision_data.swapaxes(0, 1).swapaxes(1, 2)
+        # calculate plot bounds
+        y_bounds = (np.min(class_distribution_data) - ((np.max(class_distribution_data)
+                                                        - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR),
+                    np.max(class_distribution_data) + ((np.max(class_distribution_data)
+                                                        - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR))
+        x_bounds = (np.min(class_precision_data) - ((np.max(class_precision_data)
+                                                    - np.min(class_precision_data)) / PLOT_PADDING_FACTOR),
+                    np.max(class_precision_data) + ((np.max(class_precision_data)
+                                                    - np.min(class_precision_data)) / PLOT_PADDING_FACTOR))
+
+        for iteration in range(class_precision_data.shape[0]):
+            create_scatter_plot(class_precision_data[iteration], class_distribution_data[iteration],
+                                out_path=Path.joinpath(distribution_precision_base_path,
+                                                       Path(f"Class_Precision_Distribution_Plot_{iteration}.png")),
+                                group_labels=CIFAR_CLASSES, colors=np.asarray(plt.get_cmap("tab10").colors),
+                                x_bounds=x_bounds, y_bounds=y_bounds, show_legend=False, x_label="Precision",
+                                title=f"Class Distribution - Class Precision Iteration {iteration}")
+
+    if "distribution accuracy correlation" not in exclude_plot_types:
+        print("Creating class distribution accuracy correlation plots.")
+        distribution_accuracy_base_path = Path.joinpath(plot_base_path, Path("Class_Accuracy_Distribution"))
+        if not Path(distribution_accuracy_base_path).is_dir():
+            distribution_accuracy_base_path.mkdir()
+        class_distribution_data = np.asarray(log_data["Class Distribution All"])
+        # class accuracy can be calculated as TP + TN / TP+TN+FP+FN <-- 1
+        # Or 1-row_of_confusion_matrix-column_of_confusion_matrix + 2*diagonal entry
+        confusion_matrix_data = np.asarray(log_data["Confusion Matrix All"])
+        # axis = 0 run , axis = 1 iteration, axis 2 = true labels, axis 3 = predicted labels
+        summed_row_confusion_matrix_data = np.sum(confusion_matrix_data, axis=2)
+        summed_column_confusion_matrix_data = np.sum(confusion_matrix_data, axis=3)
+        class_accuracy_data = np.empty(
+            (confusion_matrix_data.shape[0], confusion_matrix_data.shape[1], len(CIFAR_CLASSES)))
+        for run_idx in range(confusion_matrix_data.shape[0]):
+            for iteration_idx in range(confusion_matrix_data.shape[1]):
+                for class_idx in range(len(CIFAR_CLASSES)):
+                    class_accuracy_data[run_idx][iteration_idx][class_idx] =\
+                        1 - summed_row_confusion_matrix_data[run_idx][iteration_idx][class_idx]\
+                        - summed_column_confusion_matrix_data[run_idx][iteration_idx][class_idx] +\
+                        (2*confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx])
+        class_distribution_data = class_distribution_data.swapaxes(0, 1).swapaxes(1, 2)
+        class_accuracy_data = class_accuracy_data.swapaxes(0, 1).swapaxes(1, 2)
+        # calculate plot bounds
+        y_bounds = (np.min(class_distribution_data) - ((np.max(class_distribution_data)
+                                                        - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR),
+                    np.max(class_distribution_data) + ((np.max(class_distribution_data)
+                                                        - np.min(class_distribution_data)) / PLOT_PADDING_FACTOR))
+        x_bounds = (np.min(class_accuracy_data) - ((np.max(class_accuracy_data)
+                                                     - np.min(class_accuracy_data)) / PLOT_PADDING_FACTOR),
+                    np.max(class_accuracy_data) + ((np.max(class_accuracy_data)
+                                                     - np.min(class_accuracy_data)) / PLOT_PADDING_FACTOR))
+
+        for iteration in range(class_accuracy_data.shape[0]):
+            create_scatter_plot(class_accuracy_data[iteration], class_distribution_data[iteration],
+                                out_path=Path.joinpath(distribution_accuracy_base_path,
+                                                       Path(f"Class_Accuracy_Distribution_Plot_{iteration}.png")),
+                                group_labels=CIFAR_CLASSES, colors=np.asarray(plt.get_cmap("tab10").colors),
+                                x_bounds=x_bounds, y_bounds=y_bounds, show_legend=False, x_label="Accuracy",
+                                title=f"Class Distribution - Class Accuracy Iteration {iteration}")
     if plot_individual_runs:
         # individual plots
         print("Creating individual plots..")
@@ -624,7 +717,19 @@ def annotate_heatmap(im, data=None, valfmt="{x:.2f}",
     return texts
 
 
+def single_plot_all(plot_individual_runs=False, exclude_plot_types=None):
+    if Path(MERGED_LOGS_PATH).is_dir():
+        log_files = list(Path(MERGED_LOGS_PATH).glob('*.json'))
+        for log_file in log_files:
+            create_single_setting_plots(log_file.parts[-1], plot_individual_runs=plot_individual_runs,
+                                        exclude_plot_types=exclude_plot_types)
+    else:
+        merge_similar_runs()
+        single_plot_all(plot_individual_runs=plot_individual_runs, exclude_plot_types=exclude_plot_types)
+
+
 if __name__ == '__main__':
     fire.Fire({'merge': merge_similar_runs,
                'single_plot': create_single_setting_plots,
-               'multi_plot': create_plots_over_setting})
+               'multi_plot': create_plots_over_setting,
+               'single_plot_all': single_plot_all})
