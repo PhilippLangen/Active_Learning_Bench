@@ -75,7 +75,7 @@ You can split a queue file into multiple parts using:
 python job_queue.py split_workload --json_queue $json_queue_filepath --num_splits $number_of_desired_splits 
                                    --remove_original_file $remove_original_file_bool Default:True
 ```
-The created files are named after the original, having _part_$part_index appended to their end.
+The created files are named after the original, having \_part_$part_index appended to their end.
 
 
 ### Evaluation
