@@ -56,19 +56,19 @@ def run_queue(queue_json):
         raise SystemExit
 
 
-def split_workload(queue_json, num_splits, remove_original_file=True):
-    queue_file = Path(queue_json)
+def split_workload(json_queue, num_splits, remove_original_file=True):
+    queue_file = Path(json_queue)
     if queue_file.is_file():
         with queue_file.open() as file:
             workload = np.asarray(json.load(file))
             file.close()
     else:
-        print(f"{queue_json} not found!")
+        print(f"{json_queue} not found!")
         raise SystemExit
     work_splits = np.array_split(workload, num_splits)
     for work_split_index, work_split in enumerate(work_splits):
         work_split_list = work_split.tolist()
-        work_split_filename = queue_json[:-5]
+        work_split_filename = json_queue[:-5]
         work_split_filename = f"{work_split_filename}_part_{work_split_index}.json"
         with Path(work_split_filename).open('w', encoding='utf-8') as split_file:
             json.dump(work_split_list, split_file)
