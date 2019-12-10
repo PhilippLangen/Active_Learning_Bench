@@ -4,6 +4,9 @@ import numpy as np
 import torch
 from scipy import spatial
 
+import resnet
+from active_learning_benchmark import Hook
+
 
 class FrameworkDummy:
 
@@ -208,6 +211,111 @@ class UncertaintyTest(unittest.TestCase):
         fd.low_confidence_sampling(fd.confidences)
         self.assertEqual(fd.unlabelled_idx.tolist(), [0, 2, 4])
         self.assertCountEqual(fd.labelled_idx.tolist(), [1, 3, 5, 6, 7, 8, 9])
+
+class ResNetTest(unittest.TestCase):
+    """
+    conv1 : Input features 3072
+    bn1 : Input features 65536
+    layer1
+        basic block 0
+            layer1_0_conv1 : Input features 65536
+            layer1_0_bn1 : Input features 65536
+            layer1_0_conv2 : Input features 65536
+            layer1_0_bn2 : Input features 65536
+        basic block 1
+            layer1_1_conv1 : Input features 65536
+            layer1_1_bn1 : Input features 65536
+            layer1_1_conv2 : Input features 65536
+            layer1_1_bn2 : Input features 65536
+    layer2
+        basic block 0
+            layer2_0_conv1 : Input features 65536
+            layer2_0_bn1 : Input features 32768
+            layer2_0_conv2 : Input features 32768
+            layer2_0_bn2 : Input features 32768
+                layer2_0_shortcut_0 : Input features 65536
+                layer2_0_shortcut_1 : Input features 32768
+        basic block 1
+            layer2_1_conv1 : Input features 32768
+            layer2_1_bn1 : Input features 32768
+            layer2_1_conv2 : Input features 32768
+            layer2_1_bn2 : Input features 32768
+    layer3
+        basic block 0
+            layer3_0_conv1 : Input features 32768
+            layer3_0_bn1 : Input features 16384
+            layer3_0_conv2 : Input features 16384
+            layer3_0_bn2 : Input features 16384
+                layer3_0_shortcut_0 : Input features 32768
+                layer3_0_shortcut_1 : Input features 16384
+        basic block 1
+            layer3_1_conv1 : Input features 16384
+            layer3_1_bn1 : Input features 16384
+            layer3_1_conv2 : Input features 16384
+            layer3_1_bn2 : Input features 16384
+    layer4
+        basic block 0
+            layer4_0_conv1 : Input features 16384
+            layer4_0_bn1 : Input features 8192
+            layer4_0_conv2 : Input features 8192
+            layer4_0_bn2 : Input features 8192
+                layer4_0_shortcut_0 : Input features 16384
+                layer4_0_shortcut_1 : Input features 8192
+        basic block 1
+            layer4_1_conv1 : Input features 8192
+            layer4_1_bn1 : Input features 8192
+            layer4_1_conv2 : Input features 8192
+            layer4_1_bn2 : Input features 8192
+    linear : Input features 512
+    """
+    def test_resnet_hooks(self):
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        model = resnet.ResNet18().to(self.device)
+        target_layer = "layer3_0_shortcut_0"
+        hook = None
+        num_features = 1
+        print(type(model))
+        for outer_layer in model._modules.items():
+            if type(outer_layer[1]) == torch.nn.Sequential:
+                for inner_layer in outer_layer[1]._modules.items():
+                    if type(inner_layer[1]) == resnet.BasicBlock:
+                        for basic_block_layer in inner_layer[1]._modules.items():
+                            if type(basic_block_layer[1]) == torch.nn.Sequential:
+                                for shortcut_layer in basic_block_layer[1]._modules.items():
+                                    if f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}_{shortcut_layer[0]}" == target_layer:
+                                        hook = Hook(shortcut_layer[1])
+                                        # run random image through network to get output size of the target layer
+                                        model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                                        for k in range(1, len(hook.input[0].size())):
+                                            num_features *= hook.input[0].size()[k]
+                                        print(f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}_{shortcut_layer[0]} : Input features {num_features}")
+
+                            else:
+                                if f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}" == target_layer:
+                                    hook = Hook(basic_block_layer[1])
+                                    # run random image through network to get output size of the target layer
+                                    model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                                    for k in range(1, len(hook.input[0].size())):
+                                        num_features *= hook.input[0].size()[k]
+                                    print(f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]} : Input features {num_features}")
+
+                    else:
+                        if f"{outer_layer[0]}_{inner_layer[0]}" == target_layer:
+                            hook = Hook(inner_layer[1])
+                            # run random image through network to get output size of the target layer
+                            model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                            for k in range(1, len(hook.input[0].size())):
+                                num_features *= hook.input[0].size()[k]
+                            print(f"{outer_layer[0]}_{inner_layer[0]} : Input features {num_features}")
+
+            else:
+                if outer_layer[0] == target_layer:
+                    hook = Hook(outer_layer[1])
+                    # run random image through network to get output size of the target layer
+                    model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                    for k in range(1, len(hook.input[0].size())):
+                        num_features *= hook.input[0].size()[k]
+                    print(f"{outer_layer[0]} : Input features {num_features}")
 
 
 if __name__ == '__main__':
