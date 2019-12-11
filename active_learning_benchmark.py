@@ -539,7 +539,7 @@ class ActiveLearningBench:
             self.visualize(activations, losses, self.iterations)
         # create log file
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
-               'Iterations': self.iterations, 'Batch Size': self.batch_size,
+               'Iterations': self.iterations, 'Batch Size': self.batch_size, 'Model': self.model_type,
                'Target Layer': self.target_layer, 'Accuracy': accuracy_log,
                'Class Distribution': class_distribution_log, 'Confusion Matrix': confusion_matrix_log}
         # If the desired filename is already taken, append a number to the filename.

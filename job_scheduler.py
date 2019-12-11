@@ -10,7 +10,7 @@ TOTAL_BUDGET = 40000
 
 
 def add_new_jobs(json_queue, strategies=["random_sampling"], initial_training_splits=[1000], batch_sizes=[32],
-                 target_layers=[4], budgets=[1000], runs=5):
+                 target_layers=[4], budgets=[1000], model="simplecnn", runs=5):
     job_list = []
     json_queue_path = Path(json_queue)
     if json_queue_path.is_file():
@@ -25,7 +25,7 @@ def add_new_jobs(json_queue, strategies=["random_sampling"], initial_training_sp
                         for run in range(runs):
                             new_job = {"Strategy": strategy, "Budget": budget, "Initial Split": initial_training_split,
                                        "Iterations": int((TOTAL_BUDGET-initial_training_split)/budget),
-                                       "Batch Size": batch_size, "Target Layer": target_layer}
+                                       "Batch Size": batch_size, "Target Layer": target_layer, "Model": model}
                             job_list.append(new_job)
     with json_queue_path.open('w', encoding='utf-8') as file:
         json.dump(job_list, file, ensure_ascii=False)
@@ -41,11 +41,11 @@ def run_queue(queue_json):
             while len(queue) > 0:
                 job = queue.pop(0)
                 log_file = f"{job['Strategy']}_{job['Budget']}_{job['Initial Split']}_{job['Iterations']}_" \
-                    f"{job['Batch Size']}_{job['Target Layer']}"
+                    f"{job['Batch Size']}_{job['Target Layer']}_{job['Model']}"
                 ActiveLearningBench(labeling_strategy=job['Strategy'], logfile=log_file,
                                     initial_training_size=job['Initial Split'], batch_size=job['Batch Size'],
                                     budget=job['Budget'], iterations=job['Iterations'],
-                                    target_layer=job['Target Layer']).run()
+                                    target_layer=job['Target Layer'], model=job['Model']).run()
                 with queue_file.open('w', encoding='utf-8') as modified_file:
                     json.dump(queue, modified_file, ensure_ascii=False)
                     file.close()
