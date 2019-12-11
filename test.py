@@ -173,7 +173,7 @@ class FrameworkDummy:
             unlabelled_max_confidences, _ = torch.max(unlabelled_confidences, dim=1)
             print(unlabelled_max_confidences)
             _, lowest_max_confidence_indices = torch.topk(unlabelled_max_confidences, self.budget, largest=False)
-            added_samples = self.unlabelled_idx[lowest_max_confidence_indices]
+            added_samples = self.unlabelled_idx[lowest_max_confidence_indices.to("cpu")]
             print(added_samples)
 
             self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, added_samples)

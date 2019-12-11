@@ -12,15 +12,14 @@ import torchvision
 import torchvision.transforms as transforms
 from sklearn.decomposition import PCA
 
+import resnet
+
 VALIDATION_SET_SIZE = 5000
 EVALUATION_BATCH_SIZE = 100
 MAX_EPOCHS = 400
-LR_UPDATE_PATIENCE = 10
-LR_COOLDOWN = 5
-EARLY_STOPPING_PATIENCE = 15
+EARLY_STOPPING_PATIENCE = 10
 LEARNING_RATE = 0.001
 MOMENTUM = 0.9
-MINIMUM_LEARNING_RATE = 0.0001
 
 
 class SimpleCNN(nn.Module):
@@ -76,7 +75,8 @@ class ActiveLearningBench:
         :param vis: Toggle plots visualizing activations in 2-D space using PCA
     """
     def __init__(self, labeling_strategy="random_sampling", logfile="log", initial_training_size=1000, batch_size=32,
-                 budget=1000, iterations=20, target_layer=4, vis=False):
+                 budget=1000, iterations=20, target_layer=4, vis=False, model="SimpleCNN"):
+        self.model_type = model.lower()
         # Set a torch device. GPU if available.
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         # Ensure all output directories have been created.
@@ -141,14 +141,17 @@ class ActiveLearningBench:
         :return: trained model
         """
         # Initialize model and optimization tools.
-        model = SimpleCNN()
+        if self.model_type == "simplecnn":
+            model = SimpleCNN()
+        elif self.model_type == "resnet18":
+            model = resnet.ResNet18()
+        else:
+            print(f"Unrecognized model type {self.model_type}!")
+            raise SystemExit
         model.to(self.device)
         best_validation_model = None
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
-        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=LR_UPDATE_PATIENCE,
-                                                                  verbose=True, min_lr=MINIMUM_LEARNING_RATE,
-                                                                  cooldown=LR_COOLDOWN)
         min_validation_loss = np.inf
         epochs_without_validation_improvement = 0
         print(f"Training on {self.labelled_idx.shape[0]} samples.")
@@ -183,7 +186,6 @@ class ActiveLearningBench:
                     outputs = model(inputs)
                     average_validation_loss += criterion(outputs, labels)
                 average_validation_loss /= (VALIDATION_SET_SIZE / EVALUATION_BATCH_SIZE)
-                lr_scheduler.step(average_validation_loss)
                 print(f"Validation loss: {average_validation_loss:.3f}")
             # check for validation loss improvement
             if average_validation_loss < min_validation_loss:
@@ -356,12 +358,7 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
 
-    def create_vector_rep(self, model, criterion):
-        """
-        extract activations add target layer, order of samples is preserved
-        :return: target activations and loss for each sample
-        """
-        model.eval()
+    def hook_simple_cnn(self, model):
         hook = None
         num_features = 1
         # install a forward hook at the target layer
@@ -372,6 +369,63 @@ class ActiveLearningBench:
                 model(torch.zeros((1, 3, 32, 32)).to(self.device))
                 for k in range(1, len(hook.input[0].size())):
                     num_features *= hook.input[0].size()[k]
+        return hook, num_features
+
+    def hook_resnet(self, model):
+        hook = None
+        num_features = 1
+        for outer_layer in model._modules.items():
+            if type(outer_layer[1]) == torch.nn.Sequential:
+                for inner_layer in outer_layer[1]._modules.items():
+                    if type(inner_layer[1]) == resnet.BasicBlock:
+                        for basic_block_layer in inner_layer[1]._modules.items():
+                            if type(basic_block_layer[1]) == torch.nn.Sequential:
+                                for shortcut_layer in basic_block_layer[1]._modules.items():
+                                    if f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}_{shortcut_layer[0]}" == self.target_layer:
+                                        hook = Hook(shortcut_layer[1])
+                                        # run random image through network to get output size of the target layer
+                                        model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                                        for k in range(1, len(hook.input[0].size())):
+                                            num_features *= hook.input[0].size()[k]
+                            else:
+                                if f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}" == self.target_layer:
+                                    hook = Hook(basic_block_layer[1])
+                                    # run random image through network to get output size of the target layer
+                                    model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                                    for k in range(1, len(hook.input[0].size())):
+                                        num_features *= hook.input[0].size()[k]
+                    else:
+                        if f"{outer_layer[0]}_{inner_layer[0]}" == self.target_layer:
+                            hook = Hook(inner_layer[1])
+                            # run random image through network to get output size of the target layer
+                            model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                            for k in range(1, len(hook.input[0].size())):
+                                num_features *= hook.input[0].size()[k]
+            else:
+                if outer_layer[0] == self.target_layer:
+                    hook = Hook(outer_layer[1])
+                    # run random image through network to get output size of the target layer
+                    model(torch.zeros((1, 3, 32, 32)).to(self.device))
+                    for k in range(1, len(hook.input[0].size())):
+                        num_features *= hook.input[0].size()[k]
+        return hook, num_features
+
+    def create_vector_rep(self, model, criterion):
+        """
+        extract activations add target layer, order of samples is preserved
+        :return: target activations and loss for each sample
+        """
+        model.eval()
+        if type(model) == SimpleCNN:
+            hook, num_features = self.hook_simple_cnn(model)
+        elif type(model) == resnet.ResNet:
+            hook, num_features = self.hook_resnet(model)
+        else:
+            print(f"Unknown model type {type(model)}")
+            raise SystemExit
+        if hook is None:
+            print(f"Could not find layer {self.target_layer} in {type(model)}")
+            raise SystemExit
         print("Creating vector representation of training set")
         with torch.no_grad():
             # initialize containers for data
