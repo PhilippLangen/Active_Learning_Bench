@@ -237,10 +237,10 @@ def create_line_plot(x_data, y_data, out_path, labels, error=None, x_bounds=None
     if error is not None:
         for line_idx in range(len(y_data)):
             ax.errorbar(x=x_data[line_idx], y=y_data[line_idx], yerr=error[line_idx], marker='o', markersize=4,
-                        label=labels[line_idx])
+                        label=labels[line_idx], alpha=0.65)
     else:
         for line_idx in range(len(y_data)):
-            ax.plot(x_data[line_idx], y_data[line_idx], marker='o', markersize=4, label=labels[line_idx])
+            ax.plot(x_data[line_idx], y_data[line_idx], marker='o', markersize=4, label=labels[line_idx], alpha=0.65)
     if show_legend:
         ax.legend(loc='lower right')
     ax.set_xlim(x_bounds)
