@@ -6,7 +6,7 @@ import numpy as np
 
 from active_learning_benchmark import ActiveLearningBench
 
-TOTAL_BUDGET = 40000
+TOTAL_BUDGET = 50000
 
 
 def add_new_jobs(json_queue, strategies=["random_sampling"], initial_training_splits=[1000], batch_sizes=[32],
