@@ -13,11 +13,10 @@ import torchvision.transforms as transforms
 from sklearn.decomposition import PCA
 
 import resnet
+from VGGFeat import VGGFeat
 
-VALIDATION_SET_SIZE = 5000
 EVALUATION_BATCH_SIZE = 100
-MAX_EPOCHS = 400
-EARLY_STOPPING_PATIENCE = 10
+EPOCHS = 200
 LEARNING_RATE = 0.001
 MOMENTUM = 0.9
 
@@ -88,30 +87,32 @@ class ActiveLearningBench:
             Path('./logs').mkdir()
         self.logfile = logfile
         # normalize data with mean and standard deviation of the dataset.
-        self.data_transform = transforms.Compose([transforms.ToTensor(),
+        self.data_transform_train = transforms.Compose([
+                                                     transforms.RandomCrop(32, padding=4),
+                                                     transforms.RandomHorizontalFlip(),
+                                                     transforms.ToTensor(),
+                                                     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
+        self.data_transform_test = transforms.Compose([transforms.ToTensor(),
                                                   transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
-                                                                       (0.24703223, 0.24348513, 0.26158784))])
+                                                                       (0.2023, 0.1994, 0.2010))])
         # load the CIFAR test and training sets.
         self.training_set = torchvision.datasets.CIFAR10(root='./datasets', train=True, download=True,
-                                                         transform=self.data_transform)
+                                                         transform=self.data_transform_train)
         self.test_set = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True,
-                                                     transform=self.data_transform)
+                                                     transform=self.data_transform_test)
         self.labeling_strategy = labeling_strategy
         # Ensure that the number of initially labelled samples does not exceed the number of available samples.
-        self.initial_training_size = min(initial_training_size, len(self.training_set.data)-VALIDATION_SET_SIZE)
+        self.initial_training_size = min(initial_training_size, len(self.training_set.data))
         self.batch_size = batch_size
         self.budget = budget
         self.target_layer = target_layer
         self.vis = vis
         # make sure we don't keep labelling samples if we run out of samples.
         self.iterations = min(iterations,
-                              int((len(self.training_set.data)-self.initial_training_size - VALIDATION_SET_SIZE)
+                              int((len(self.training_set.data)-self.initial_training_size)
                                   / self.budget))
         # keep track of indices of labelled and unlabelled samples
         self.unlabelled_idx = np.arange(0, self.training_set.data.shape[0])
-        # select samples for the validation set.
-        validation_idx = np.random.choice(self.unlabelled_idx, VALIDATION_SET_SIZE, replace=False)
-        self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, validation_idx)
         # pick initial labelled indices.
         self.labelled_idx = np.random.choice(self.unlabelled_idx, self.initial_training_size, replace=False)
         self.unlabelled_idx = np.setdiff1d(self.unlabelled_idx, self.labelled_idx)
@@ -120,11 +121,6 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set,
                                                         batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
-        validation_sampler = torch.utils.data.SubsetRandomSampler(validation_idx)
-        self.validation_loader = torch.utils.data.DataLoader(dataset=self.training_set,
-                                                             batch_size=EVALUATION_BATCH_SIZE,
-                                                             sampler=validation_sampler,
-                                                             num_workers=2)
         self.test_loader = torch.utils.data.DataLoader(dataset=self.test_set,
                                                        batch_size=EVALUATION_BATCH_SIZE,
                                                        num_workers=2)
@@ -145,17 +141,20 @@ class ActiveLearningBench:
             model = SimpleCNN()
         elif self.model_type == "resnet18":
             model = resnet.ResNet18()
+        elif self.model_type == "vgg16":
+            model = VGGFeat('VGG16')
         else:
             print(f"Unrecognized model type {self.model_type}!")
             raise SystemExit
         model.to(self.device)
-        best_validation_model = None
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
-        min_validation_loss = np.inf
-        epochs_without_validation_improvement = 0
+        optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=5e-4)
         print(f"Training on {self.labelled_idx.shape[0]} samples.")
-        for epoch in range(MAX_EPOCHS):
+        best_accuracy = 0
+        best_confusion_matrix = None
+        best_model = None
+        best_epoch = -1
+        for epoch in range(EPOCHS):
             # training
             model.train()
             running_loss = 0.0
@@ -167,7 +166,10 @@ class ActiveLearningBench:
                 optimizer.zero_grad()
 
                 # forward + backward + optimize
-                outputs = model(inputs)
+                if type(model) == VGGFeat:
+                    outputs, _ = model(inputs)
+                else:
+                    outputs = model(inputs)
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
@@ -177,32 +179,17 @@ class ActiveLearningBench:
                 if i % 20 == 19:  # print every 20 mini-batches
                     print(f'[{epoch}: {i + 1}/{len(self.train_loader)}] loss: {running_loss / 20:.3f}')
                     running_loss = 0.0
-            # validation
-            model.eval()
-            with torch.no_grad():
-                average_validation_loss = 0.0
-                for i, batch in enumerate(self.validation_loader, 0):
-                    inputs, labels = batch[0].to(self.device), batch[1].to(self.device)
-                    outputs = model(inputs)
-                    average_validation_loss += criterion(outputs, labels)
-                average_validation_loss /= (VALIDATION_SET_SIZE / EVALUATION_BATCH_SIZE)
-                print(f"Validation loss: {average_validation_loss:.3f}")
-            # check for validation loss improvement
-            if average_validation_loss < min_validation_loss:
-                min_validation_loss = average_validation_loss
-                # create checkpoint of model with lowest validation loss so far
-                best_validation_model = model.state_dict()
-                epochs_without_validation_improvement = 0
-            else:
-                epochs_without_validation_improvement += 1
-            if epochs_without_validation_improvement == EARLY_STOPPING_PATIENCE:
-                # load checkpoint with lowest validation loss
-                model.load_state_dict(best_validation_model)
-                print(f"Training completed after {epoch} epochs.")
-                return model, criterion
-        print(f"Trained for maximum allowed epochs.")
-        model.load_state_dict(best_validation_model)
-        return model, criterion
+
+            accuracy, confusion_matrix = self.test(model)
+            if accuracy > best_accuracy:
+                best_accuracy = accuracy
+                best_confusion_matrix = confusion_matrix
+                best_model = model.state_dict()
+                best_epoch = epoch+1
+        print(f"Best epoch was epoch {best_epoch}.")
+        model.load_state_dict(best_model)
+
+        return model, criterion, best_accuracy, best_confusion_matrix
 
     def test(self, model):
         """
@@ -218,7 +205,10 @@ class ActiveLearningBench:
             confusion_matrix = torch.zeros(size=(len(self.test_set.classes), len(self.test_set.classes)))
             for batch in self.test_loader:
                 images, labels = batch[0].to(self.device), batch[1].to(self.device)
-                outputs = model(images)
+                if type(model) == VGGFeat:
+                    outputs, _ = model(images)
+                else:
+                    outputs = model(images)
                 _, predicted = torch.max(outputs.data, 1)
                 for label in labels:
                     total_per_class[label] += 1
@@ -371,6 +361,15 @@ class ActiveLearningBench:
                     num_features *= hook.input[0].size()[k]
         return hook, num_features
 
+    def hook_vgg_last_layer(self, model):
+
+        num_features = 1
+        hook = Hook(model.classifier)
+        model(torch.zeros((1, 3, 32, 32)).to(self.device))
+        for k in range(1, len(hook.input[0].size())):
+            num_features *= hook.input[0].size()[k]
+        return hook, num_features
+
     def hook_resnet(self, model):
         hook = None
         num_features = 1
@@ -420,6 +419,8 @@ class ActiveLearningBench:
             hook, num_features = self.hook_simple_cnn(model)
         elif type(model) == resnet.ResNet:
             hook, num_features = self.hook_resnet(model)
+        elif type(model) == VGGFeat:
+            hook, num_features = self.hook_vgg_last_layer(model)
         else:
             print(f"Unknown model type {type(model)}")
             raise SystemExit
@@ -436,7 +437,10 @@ class ActiveLearningBench:
             for i, sample in enumerate(self.seq_data_loader, 0):
                 image, label = sample[0].to(self.device), sample[1].to(self.device)
                 # run forward, get activations from forward hook
-                out = model(image)
+                if type(model) == VGGFeat:
+                    out, _ = model(image)
+                else:
+                    out = model(image)
                 # flatten hooked activations - convolutional layer outputs are not flat by default
                 activations = hook.input[0].view(-1, num_features)
                 # gather activations of hooked layer
@@ -515,9 +519,7 @@ class ActiveLearningBench:
         # main loop
         for i in range(self.iterations):
             # fully train model
-            model, criterion = self.get_trained_model()
-            # benchmark
-            accuracy, confusion_matrix = self.test(model)
+            model, criterion, accuracy, confusion_matrix = self.get_trained_model()
             accuracy_log.append(accuracy)
             confusion_matrix_log.append(confusion_matrix)
             class_distribution_log.append(self.get_class_distribution())
@@ -529,7 +531,7 @@ class ActiveLearningBench:
             print("Select samples for labelling")
             self.__getattribute__(self.labeling_strategy)(activations, losses, confidences)
         # evaluation after last samples have been added
-        model, criterion = self.get_trained_model()
+        model, criterion, accuracy, confusion_matrix = self.get_trained_model()
         accuracy, confusion_matrix = self.test(model)
         accuracy_log.append(accuracy)
         confusion_matrix_log.append(confusion_matrix)
