@@ -17,7 +17,7 @@ from VGGFeat import VGGFeat
 
 EVALUATION_BATCH_SIZE = 100
 EPOCHS = 200
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 MOMENTUM = 0.9
 
 
@@ -148,7 +148,7 @@ class ActiveLearningBench:
             raise SystemExit
         model.to(self.device)
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=5e-4)
+        optimizer = torch.optim.RMSprop(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=5e-4)
         print(f"Training on {self.labelled_idx.shape[0]} samples.")
         best_accuracy = 0
         best_confusion_matrix = None
@@ -252,15 +252,17 @@ class ActiveLearningBench:
             min_dist = torch.cat((min_dist[0:idx], min_dist[idx + 1:]), dim=0)
             # now we need to check if labelling has minimized any minimal distances to labelled samples
             # 3.) finally calc min over 2 values
-            min_dist, _ = \
-                torch.min(
-                    # 2.) add distances to new sample to old min distance_matrix values shape(x,1) -> (x,2)
-                    torch.cat((
-                        torch.reshape(min_dist, (-1, 1)),
-                        # 1.) first calculate distance from unlabelled to new sample
-                        torch.cdist(unlabelled_data, torch.reshape(new_sample_data, (1, -1)))),
-                        dim=1),
-                    dim=1)
+            # catch edge case - no more unlabelled data -> cant calculate distance to unlabelled data
+            if unlabelled_data.size()[0] > 0:
+                min_dist, _ = \
+                    torch.min(
+                        # 2.) add distances to new sample to old min distance_matrix values shape(x,1) -> (x,2)
+                        torch.cat((
+                            torch.reshape(min_dist, (-1, 1)),
+                            # 1.) first calculate distance from unlabelled to new sample
+                            torch.cdist(unlabelled_data, torch.reshape(new_sample_data, (1, -1)))),
+                            dim=1),
+                        dim=1)
 
         # update data loader
         labelled_sampler = torch.utils.data.SubsetRandomSampler(self.labelled_idx)
