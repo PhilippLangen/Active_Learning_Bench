@@ -1,4 +1,5 @@
 import json
+import uuid
 from pathlib import Path
 
 import fire
@@ -152,8 +153,10 @@ class ActiveLearningBench:
         print(f"Training on {self.labelled_idx.shape[0]} samples.")
         best_accuracy = 0
         best_confusion_matrix = None
-        best_model = None
         best_epoch = -1
+        model_path = Path(f"model_{uuid.uuid4().hex}")
+        while model_path.exists():
+            model_path = Path(f"model_{uuid.uuid4().hex}")
         for epoch in range(EPOCHS):
             # training
             model.train()
@@ -184,10 +187,12 @@ class ActiveLearningBench:
             if accuracy > best_accuracy:
                 best_accuracy = accuracy
                 best_confusion_matrix = confusion_matrix
-                best_model = model.state_dict()
+                torch.save(model.state_dict(), model_path)
                 best_epoch = epoch+1
+
         print(f"Best epoch was epoch {best_epoch}.")
-        model.load_state_dict(best_model)
+        model.load_state_dict(torch.load(model_path))
+        model_path.unlink()
 
         return model, criterion, best_accuracy, best_confusion_matrix
 
@@ -534,7 +539,6 @@ class ActiveLearningBench:
             self.__getattribute__(self.labeling_strategy)(activations, losses, confidences)
         # evaluation after last samples have been added
         model, criterion, accuracy, confusion_matrix = self.get_trained_model()
-        accuracy, confusion_matrix = self.test(model)
         accuracy_log.append(accuracy)
         confusion_matrix_log.append(confusion_matrix)
         class_distribution_log.append(self.get_class_distribution())
