@@ -1,4 +1,5 @@
 import json
+import uuid
 from pathlib import Path
 
 import fire
@@ -149,7 +150,9 @@ class ActiveLearningBench:
             print(f"Unrecognized model type {self.model_type}!")
             raise SystemExit
         model.to(self.device)
-        best_validation_model = None
+        model_path = Path(f"model_{uuid.uuid4().hex}")
+        while model_path.exists():
+            model_path = Path(f"model_{uuid.uuid4().hex}")
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
         min_validation_loss = np.inf
@@ -191,17 +194,19 @@ class ActiveLearningBench:
             if average_validation_loss < min_validation_loss:
                 min_validation_loss = average_validation_loss
                 # create checkpoint of model with lowest validation loss so far
-                best_validation_model = model.state_dict()
+                torch.save(model.state_dict(), model_path)
                 epochs_without_validation_improvement = 0
             else:
                 epochs_without_validation_improvement += 1
             if epochs_without_validation_improvement == EARLY_STOPPING_PATIENCE:
                 # load checkpoint with lowest validation loss
-                model.load_state_dict(best_validation_model)
+                model.load_state_dict(torch.load(model_path))
+                model_path.unlink()
                 print(f"Training completed after {epoch} epochs.")
                 return model, criterion
         print(f"Trained for maximum allowed epochs.")
-        model.load_state_dict(best_validation_model)
+        model.load_state_dict(torch.load(model_path))
+        model_path.unlink()
         return model, criterion
 
     def test(self, model):
