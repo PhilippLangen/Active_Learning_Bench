@@ -17,9 +17,8 @@ import resnet
 
 VALIDATION_SET_SIZE = 5000
 EVALUATION_BATCH_SIZE = 100
-MAX_EPOCHS = 400
-EARLY_STOPPING_PATIENCE = 10
-LEARNING_RATE = 0.001
+MAX_EPOCHS = 200
+LEARNING_RATE = 0.0001
 MOMENTUM = 0.9
 
 
@@ -76,7 +75,7 @@ class ActiveLearningBench:
         :param vis: Toggle plots visualizing activations in 2-D space using PCA
     """
     def __init__(self, labeling_strategy="random_sampling", logfile="log", initial_training_size=1000, batch_size=32,
-                 budget=1000, iterations=20, target_layer=4, vis=False, model="SimpleCNN"):
+                 budget=1000, iterations=20, target_layer=4, vis=False, model="SimpleCNN", data_augmentation=True):
         self.model_type = model.lower()
         # Set a torch device. GPU if available.
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -88,15 +87,26 @@ class ActiveLearningBench:
         if not Path('./logs').is_dir():
             Path('./logs').mkdir()
         self.logfile = logfile
+        self.data_augmentation = data_augmentation
         # normalize data with mean and standard deviation of the dataset.
-        self.data_transform = transforms.Compose([transforms.ToTensor(),
-                                                  transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
-                                                                       (0.24703223, 0.24348513, 0.26158784))])
+        if self.data_augmentation:
+            self.training_transform = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.49139968, 0.48215841, 0.44653091), (0.24703223, 0.24348513, 0.26158784))])
+        else:
+            self.training_transform = transforms.Compose([transforms.ToTensor(),
+                                                         transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
+                                                                              (0.24703223, 0.24348513, 0.26158784))])
+        self.testing_transform = transforms.Compose([transforms.ToTensor(),
+                                                     transforms.Normalize((0.49139968, 0.48215841, 0.44653091),
+                                                                          (0.24703223, 0.24348513, 0.26158784))])
         # load the CIFAR test and training sets.
         self.training_set = torchvision.datasets.CIFAR10(root='./datasets', train=True, download=True,
-                                                         transform=self.data_transform)
+                                                         transform=self.training_transform)
         self.test_set = torchvision.datasets.CIFAR10(root='./datasets', train=False, download=True,
-                                                     transform=self.data_transform)
+                                                     transform=self.testing_transform)
         self.labeling_strategy = labeling_strategy
         # Ensure that the number of initially labelled samples does not exceed the number of available samples.
         self.initial_training_size = min(initial_training_size, len(self.training_set.data)-VALIDATION_SET_SIZE)
@@ -154,9 +164,9 @@ class ActiveLearningBench:
         while model_path.exists():
             model_path = Path(f"model_{uuid.uuid4().hex}")
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
+        optimizer = torch.optim.RMSprop(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=5e-4)
         min_validation_loss = np.inf
-        epochs_without_validation_improvement = 0
+        best_epoch = -1
         print(f"Training on {self.labelled_idx.shape[0]} samples.")
         for epoch in range(MAX_EPOCHS):
             # training
@@ -193,18 +203,10 @@ class ActiveLearningBench:
             # check for validation loss improvement
             if average_validation_loss < min_validation_loss:
                 min_validation_loss = average_validation_loss
+                best_epoch = epoch
                 # create checkpoint of model with lowest validation loss so far
                 torch.save(model.state_dict(), model_path)
-                epochs_without_validation_improvement = 0
-            else:
-                epochs_without_validation_improvement += 1
-            if epochs_without_validation_improvement == EARLY_STOPPING_PATIENCE:
-                # load checkpoint with lowest validation loss
-                model.load_state_dict(torch.load(model_path))
-                model_path.unlink()
-                print(f"Training completed after {epoch} epochs.")
-                return model, criterion
-        print(f"Trained for maximum allowed epochs.")
+        print(f"Training completed. Best epoch was {best_epoch} with validation loss {min_validation_loss:.3f}")
         model.load_state_dict(torch.load(model_path))
         model_path.unlink()
         return model, criterion
@@ -365,22 +367,24 @@ class ActiveLearningBench:
         self.train_loader = torch.utils.data.DataLoader(dataset=self.training_set, batch_size=self.batch_size,
                                                         sampler=labelled_sampler, num_workers=2)
 
-    def hook_simple_cnn(self, model):
-        hook = None
+    def hook_and_get_num_features(self, model, layer):
+        hook = Hook(layer[1])
+        # run random image through network to get output size of the target layer
         num_features = 1
+        model(torch.zeros((1, 3, 32, 32)).to(self.device))
+        for input_dimension in range(1, len(hook.input[0].size())):
+            num_features *= hook.input[0].size()[input_dimension]
+        return hook, num_features
+
+    def hook_simple_cnn(self, model):
         # install a forward hook at the target layer
         for i, layer in enumerate(model._modules.items()):
             if i == self.target_layer:
-                hook = Hook(layer[1])
-                # run random image through network to get output size of the target layer
-                model(torch.zeros((1, 3, 32, 32)).to(self.device))
-                for k in range(1, len(hook.input[0].size())):
-                    num_features *= hook.input[0].size()[k]
-        return hook, num_features
+                return self.hook_and_get_num_features(model, layer)
+        print(f"Target layer {self.target_layer} could not be found in {self.model_type}")
+        raise SystemExit
 
     def hook_resnet(self, model):
-        hook = None
-        num_features = 1
         for outer_layer in model._modules.items():
             if type(outer_layer[1]) == torch.nn.Sequential:
                 for inner_layer in outer_layer[1]._modules.items():
@@ -389,33 +393,18 @@ class ActiveLearningBench:
                             if type(basic_block_layer[1]) == torch.nn.Sequential:
                                 for shortcut_layer in basic_block_layer[1]._modules.items():
                                     if f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}_{shortcut_layer[0]}" == self.target_layer:
-                                        hook = Hook(shortcut_layer[1])
-                                        # run random image through network to get output size of the target layer
-                                        model(torch.zeros((1, 3, 32, 32)).to(self.device))
-                                        for k in range(1, len(hook.input[0].size())):
-                                            num_features *= hook.input[0].size()[k]
+                                        return self.hook_and_get_num_features(model, shortcut_layer)
                             else:
                                 if f"{outer_layer[0]}_{inner_layer[0]}_{basic_block_layer[0]}" == self.target_layer:
-                                    hook = Hook(basic_block_layer[1])
-                                    # run random image through network to get output size of the target layer
-                                    model(torch.zeros((1, 3, 32, 32)).to(self.device))
-                                    for k in range(1, len(hook.input[0].size())):
-                                        num_features *= hook.input[0].size()[k]
+                                    return self.hook_and_get_num_features(model, basic_block_layer)
                     else:
                         if f"{outer_layer[0]}_{inner_layer[0]}" == self.target_layer:
-                            hook = Hook(inner_layer[1])
-                            # run random image through network to get output size of the target layer
-                            model(torch.zeros((1, 3, 32, 32)).to(self.device))
-                            for k in range(1, len(hook.input[0].size())):
-                                num_features *= hook.input[0].size()[k]
+                            return self.hook_and_get_num_features(model, inner_layer)
             else:
                 if outer_layer[0] == self.target_layer:
-                    hook = Hook(outer_layer[1])
-                    # run random image through network to get output size of the target layer
-                    model(torch.zeros((1, 3, 32, 32)).to(self.device))
-                    for k in range(1, len(hook.input[0].size())):
-                        num_features *= hook.input[0].size()[k]
-        return hook, num_features
+                    return self.hook_and_get_num_features(model, outer_layer)
+        print(f"Target layer {self.target_layer} could not be found in {self.model_type}")
+        raise SystemExit
 
     def create_vector_rep(self, model, criterion):
         """
@@ -547,7 +536,7 @@ class ActiveLearningBench:
         # create log file
         log = {'Strategy': self.labeling_strategy, 'Budget': self.budget, 'Initial Split': self.initial_training_size,
                'Iterations': self.iterations, 'Batch Size': self.batch_size, 'Model': self.model_type,
-               'Target Layer': self.target_layer, 'Accuracy': accuracy_log,
+               'Target Layer': self.target_layer, 'Data Augmentation': self.data_augmentation, 'Accuracy': accuracy_log,
                'Class Distribution': class_distribution_log, 'Confusion Matrix': confusion_matrix_log}
         # If the desired filename is already taken, append a number to the filename.
         filepath = Path(f'./logs/{self.logfile}.json')
@@ -557,7 +546,6 @@ class ActiveLearningBench:
             i += 1
         with filepath.open('w', encoding='utf-8') as file:
             json.dump(log, file, ensure_ascii=False)
-            file.close()
 
 
 if __name__ == '__main__':

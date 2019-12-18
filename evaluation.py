@@ -36,7 +36,8 @@ def merge_similar_runs():
         with log.open() as json_file:
             json_data = json.load(json_file)
             key = (json_data["Strategy"], json_data["Budget"], json_data["Initial Split"],
-                   json_data["Iterations"], json_data["Batch Size"], json_data["Target Layer"], json_data["Model"])
+                   json_data["Iterations"], json_data["Batch Size"], json_data["Target Layer"], json_data["Model"],
+                   json_data["Data Augmentation"])
             log_map[key].append(json_data)
     # loop over each setting key
     for key, log_list in log_map.items():
@@ -79,14 +80,16 @@ def merge_similar_runs():
         # create json structure
         merged_dict = {"Strategy": key[0], "Budget": key[1], "Initial Split": key[2],
                        "Iterations": key[3], "Batch Size": key[4], "Target Layer": key[5], "Model": key[6],
-                       "Accuracy All": acc, "Accuracy Mean": acc_mean, "Accuracy Std": acc_std,
+                       "Data Augmentation": key[7], "Accuracy All": acc,
+                       "Accuracy Mean": acc_mean, "Accuracy Std": acc_std,
                        "Class Distribution All": class_dist, "Class Distribution Mean": class_dist_mean,
                        "Class Distribution Std": class_dist_std, "Confusion Matrix All": conf_mat,
                        "Confusion Matrix Mean": conf_mat_mean, "Confusion Matrix Std": conf_mat_std,
                        "Information Gain All": info_gain, "Information Gain Mean": info_gain_mean,
                        "Information Gain Std": info_gain_std}
         # generate a filename by settings
-        target_file = Path(f"{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}_{key[5]}_{key[6]}.json")
+        target_file = Path(f"{key[0]}_{key[1]}_{key[2]}_{key[3]}_{key[4]}_{key[5]}_{key[6]}"
+                           f"{'_data_augmentation' if key[7] else ''}.json")
         # create json file
         with Path.joinpath(Path(target_path_base, target_file)).open('w', encoding='utf-8') as file:
             json.dump(merged_dict, file, ensure_ascii=False)
@@ -110,7 +113,7 @@ def create_plots_over_setting(examined_setting, base_setting, ignored_settings=[
     exclude_plot_types = {x.lower() for x in exclude_plot_types}
     plot_base_path = Path("./plots/setting_evaluation_plots")
     allowed_variable_settings = ["Strategy", "Budget", "Initial Split", "Batch Size", "Iterations", "Target Layer",
-                                 "Model"]
+                                 "Model", "Data Augmentation"]
     examined_setting = examined_setting.title()
     if examined_setting in allowed_variable_settings:
         shared_settings = [setting for setting in allowed_variable_settings if examined_setting != setting]
@@ -332,14 +335,15 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
         confusion_matrix_data = np.asarray(log_data["Confusion Matrix All"])
         # axis = 0 run , axis = 1 iteration, axis 2 = true labels, axis 3 = predicted labels
         summed_confusion_matrix_data = np.sum(confusion_matrix_data, axis=2)
-        class_recall_data = np.empty((confusion_matrix_data.shape[0], confusion_matrix_data.shape[1],
+        class_recall_data = np.zeros((confusion_matrix_data.shape[0], confusion_matrix_data.shape[1],
                                       len(CIFAR_CLASSES)))
         for run_idx in range(confusion_matrix_data.shape[0]):
             for iteration_idx in range(confusion_matrix_data.shape[1]):
                 for class_idx in range(len(CIFAR_CLASSES)):
-                    class_recall_data[run_idx][iteration_idx][class_idx] = \
-                        confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx] / \
-                        summed_confusion_matrix_data[run_idx][iteration_idx][class_idx]
+                    if summed_confusion_matrix_data[run_idx][iteration_idx][class_idx] != 0:
+                        class_recall_data[run_idx][iteration_idx][class_idx] = \
+                            confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx] / \
+                            summed_confusion_matrix_data[run_idx][iteration_idx][class_idx]
         class_distribution_data = class_distribution_data.swapaxes(0, 1).swapaxes(1, 2)
         class_recall_data = class_recall_data.swapaxes(0, 1).swapaxes(1, 2)
         # calculate plot bounds
@@ -366,14 +370,16 @@ def create_single_setting_plots(merged_logfile, plot_individual_runs=False, excl
         confusion_matrix_data = np.asarray(log_data["Confusion Matrix All"])
         # axis = 0 run , axis = 1 iteration, axis 2 = true labels, axis 3 = predicted labels
         summed_confusion_matrix_data = np.sum(confusion_matrix_data, axis=3)
-        class_precision_data = np.empty((confusion_matrix_data.shape[0], confusion_matrix_data.shape[1],
+        class_precision_data = np.zeros((confusion_matrix_data.shape[0], confusion_matrix_data.shape[1],
                                          len(CIFAR_CLASSES)))
+
         for run_idx in range(confusion_matrix_data.shape[0]):
             for iteration_idx in range(confusion_matrix_data.shape[1]):
                 for class_idx in range(len(CIFAR_CLASSES)):
-                    class_precision_data[run_idx][iteration_idx][class_idx] = \
-                        confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx] / \
-                        summed_confusion_matrix_data[run_idx][iteration_idx][class_idx]
+                    if summed_confusion_matrix_data[run_idx][iteration_idx][class_idx] != 0:
+                        class_precision_data[run_idx][iteration_idx][class_idx] = \
+                            confusion_matrix_data[run_idx][iteration_idx][class_idx][class_idx] / \
+                            summed_confusion_matrix_data[run_idx][iteration_idx][class_idx]
         class_distribution_data = class_distribution_data.swapaxes(0, 1).swapaxes(1, 2)
         class_precision_data = class_precision_data.swapaxes(0, 1).swapaxes(1, 2)
         # calculate plot bounds
