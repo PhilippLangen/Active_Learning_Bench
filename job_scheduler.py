@@ -50,8 +50,8 @@ def run_queue(queue_json):
                                 data_augmentation=job['Data Augmentation']).run()
             with queue_file.open('w', encoding='utf-8') as modified_file:
                 json.dump(queue, modified_file, ensure_ascii=False)
-            print(f"Job queue {queue_file} has been completed!")
-            queue_file.unlink()
+        print(f"Job queue {queue_file} has been completed!")
+        queue_file.unlink()
     else:
         print(f"{queue_json} not found!")
         raise SystemExit
