@@ -146,6 +146,7 @@ def create_plots_over_setting(examined_setting, base_setting, ignored_settings=[
               " Make sure your log directory is not empty and you run merge_similar_runs() before creating plots")
         raise SystemExit
     all_log_paths = Path(MERGED_LOGS_PATH).glob('*.json')
+    all_log_paths = sorted(all_log_paths)
     all_logs = []
     for log_path in all_log_paths:
         with log_path.open() as json_file:
@@ -169,7 +170,9 @@ def create_plots_over_setting(examined_setting, base_setting, ignored_settings=[
         print(f"Found {len(matching_logs)} logs matching these setting!")
     # create directory
     dir_name = '_'
-    dir_name = dir_name.join([str(val) for val in shared_settings_dict.values()])
+    dir_name = dir_name.join([str(val) for val in shared_settings_dict.values() if type(val) != bool])
+    if shared_settings_dict["Data Augmentation"]:
+        dir_name = f"{dir_name}_data_augmentation"
     dir_name = f"Eval:{examined_setting}_with:{dir_name}"
     plot_base_path = Path.joinpath(plot_base_path, Path(dir_name))
     if not plot_base_path.is_dir():

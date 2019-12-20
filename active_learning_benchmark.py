@@ -114,6 +114,17 @@ class ActiveLearningBench:
         self.budget = budget
         self.target_layer = target_layer
         self.vis = vis
+        if vis:
+            # create base path for vector representation
+            self.visualization_base_path = Path.joinpath(Path("plots"),
+                                                         Path("vector_visualization"),
+                                                         Path(self.logfile))
+            run_idx = 1
+            while self.visualization_base_path.is_dir():
+                self.visualization_base_path = Path.joinpath(Path("plots"),
+                                                             Path("vector_visualization"),
+                                                             Path(f"{self.logfile}_{run_idx}"))
+            self.visualization_base_path.mkdir(parents=True)
         # make sure we don't keep labelling samples if we run out of samples.
         self.iterations = min(iterations,
                               int((len(self.training_set.data)-self.initial_training_size - VALIDATION_SET_SIZE)
@@ -217,7 +228,6 @@ class ActiveLearningBench:
         :return: accuracy, confusion_matrix
         """
         model.eval()
-
         with torch.no_grad():
             # initialize statistics containers
             correct_per_class = np.zeros(len(self.test_set.classes))
@@ -368,6 +378,12 @@ class ActiveLearningBench:
                                                         sampler=labelled_sampler, num_workers=2)
 
     def hook_and_get_num_features(self, model, layer):
+        """
+        Creates a hook at the given layer and returns the number of inputs going into said layer.
+        :param model: network
+        :param layer: target layer
+        :return: hook, number of layer inputs
+        """
         hook = Hook(layer[1])
         # run random image through network to get output size of the target layer
         num_features = 1
@@ -377,6 +393,11 @@ class ActiveLearningBench:
         return hook, num_features
 
     def hook_simple_cnn(self, model):
+        """
+        Creates hook at target layer on a simpleCNN model
+        :param model: simpleCNN model
+        :return:
+        """
         # install a forward hook at the target layer
         for i, layer in enumerate(model._modules.items()):
             if i == self.target_layer:
@@ -385,6 +406,11 @@ class ActiveLearningBench:
         raise SystemExit
 
     def hook_resnet(self, model):
+        """
+        Creates hook at target layer on a ResNet model
+        :param model: ResNet model
+        :return:
+        """
         for outer_layer in model._modules.items():
             if type(outer_layer[1]) == torch.nn.Sequential:
                 for inner_layer in outer_layer[1]._modules.items():
@@ -483,7 +509,7 @@ class ActiveLearningBench:
         fig, ax = plt.subplots()
         ax.scatter(unlabelled_vec[0], unlabelled_vec[1], c="grey", s=unlabelled_loss*10, alpha=0.5)
         ax.scatter(labelled_vec[0], labelled_vec[1], c="b", s=labelled_loss*10, alpha=0.5)
-        plt.savefig(f"./plots/{iteration}.png", bbox_inches='tight')
+        plt.savefig(Path.joinpath(self.visualization_base_path, Path(f"iteration_{iteration}.png")), bbox_inches='tight')
         plt.close(fig)
 
     def get_class_distribution(self):
