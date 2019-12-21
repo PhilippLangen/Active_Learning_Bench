@@ -1,8 +1,14 @@
 # Active Learning Benchmark
-This repository provides a tool to test various geometric active learning approaches. Tests are conducted on the Cifar-10 dataset using a small CNN.
-To select new samples for labelling all samples are projected into a vector space using their network activations at a selected layer. 
-Then one of the available selection methods is used to add a batch of newly labelled samples to the training process.
-
+The basic premise of active learning is that large amounts of unlabelled data is often easy to come by, while labelling is a tedious and costly effort. 
+Active learning aims to optimize network performance using a limited dataset by carefully selecting which data samples should be labelled for training.
+This repository provides a tool to test various (geometric) active learning approaches. Tests are conducted on the CIFAR-10 dataset.
+In each iteration a model is trained from scratch for 200 epochs on all samples that have been selected up to this point.
+After each epoch network performance is estimated by testing the model on a validation set.
+After training is completed the model is reverted to the checkpoint, where validation loss was minimal.
+Then the model is used on a test set and test accuracy, confusion matrix and other parameters are logged.
+To select new samples for labelling all samples (labelled and unlabelled) are projected into a vector space using their network activations at a selected layer. 
+Then one of the available sampling strategies is used to add a batch of newly labelled samples to the training process.
+For more information on the available labelling strategies refer to the [labeling strategy section](Documentation/Strategies.md)
 ## Installation
 ```
 pip install -r requirements.txt
@@ -30,9 +36,15 @@ Current parameters are:
         Maximum number of labeling iterations
     --target_layer $TARGET_LAYER
         Layer at which activations are extracted
-    --vis $VIS
-        Toggle plots visualizing activations in 2-D space using PCA
+    --model $MODEL_ARCHITECTURE
+        Model architecture used for training.
+        "simpleCNN" for a small convolutional network or "resnet18" for ResNet18 
+    --data_augmentation
+        Activate data augmentation during training
+    --vis
+        Activate plots visualizing activations in 2-D space using PCA
 ```
+
 #### Create Job Queues
 While testing it can be helpful to queue up multiple test runs at once and then just letting them run on their own.
 You can use the job_scheduler.py script to create and run such job queues.
@@ -57,8 +69,15 @@ Default: "[32]"
 Default: "[4]"
 --budgets "[$budgets]"
 Default: "[1000]"
+--data_augmentations
+Default: "[True]"
+--model: $model_architecture
+This parameter only takes a single model type at once. This is to avoid clashes with the target_layers parameter, 
+as different models do not share the same layers.
+Default: "simplecnn"
 --runs $number_of_runs_per_setting_combination
 Number of runs that will be added for each unique setting combination.
+Default: 5
 
 Note: The number of iterations is automatically inferred from budgets and inital_training_splits, such that the total 
 number of labelled samples by the end of a run does not exceed the TOTAL_BUDGET, set as 40000 samples by default.
