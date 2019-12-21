@@ -1,4 +1,4 @@
-#Sampling Strategies
+# Sampling Strategies
 
 There are currently four different sampling strategies implemented in this repository.
 These strategies are used to mark a number of new samples for labeling after each completed training iteration.
@@ -29,3 +29,6 @@ A heuristic for network performance issues at a given point is calculated as the
 These weighting factors are also normalized to ensure points with many close neighbours do not get favored over points in less dense areas.
 
 ## Implementing New Strategies
+<!--stackedit_data:
+eyJoaXN0b3J5IjpbLTExNjAzMDk3NzldfQ==
+-->
