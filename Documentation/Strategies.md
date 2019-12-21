@@ -29,9 +29,9 @@ A heuristic for network performance issues at a given point is calculated as the
 These weighting factors are also normalized to ensure points with many close neighbours do not get favored over points in less dense areas.
 
 $$
-w_i = \frac {1}{\|L_i - p\| * \sum_ \frac{1}{\|N_j}}
+w_i = \frac {1}{\|L_i - p\| * \sum_j^{|N|} \frac{1}{\|N_j}}
 $$
 ## Implementing New Strategies
 <!--stackedit_data:
-eyJoaXN0b3J5IjpbLTQxOTgyNTc1OV19
+eyJoaXN0b3J5IjpbMTE1NDc4MTIxOV19
 -->
