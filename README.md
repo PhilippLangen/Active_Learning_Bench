@@ -5,9 +5,9 @@ This repository provides a tool to test various (geometric) active learning appr
 In each iteration a model is trained from scratch for 200 epochs on all samples that have been selected up to this point.
 After each epoch network performance is estimated by testing the model on a validation set.
 After training is completed the model is reverted to the checkpoint, where validation loss was minimal.
-Then the model is used on a test set and test accuracy, confusion matrix and other parameters are logged.
+Then the model is used on a test set and test accuracy, confusion matrix and other parameters are loggedifar-10 dataset using a small CNN.
 To select new samples for labelling all samples (labelled and unlabelled) are projected into a vector space using their network activations at a selected layer. 
-Then one of the available sampling strategies is used to add a batch of newly labelled samples to the training process.
+Then one of the available sampling strategieelection methods is used to add a batch of newly labelled samples to the training process.
 For more information on the available labelling strategies refer to the [labeling strategy section](Documentation/Strategies.md)
 ## Installation
 ```
@@ -42,7 +42,8 @@ Current parameters are:
     --data_augmentation
         Activate data augmentation during training
     --vis
-        Activate plots visualizing activations in 2-D space using PCA
+        Activatvis $VIS
+        Toggle plots visualizing activations in 2-D space using PCA
 ```
 
 #### Create Job Queues
@@ -145,3 +146,6 @@ Plot types are ['accuracy', 'class distribution', 'class distribution informatio
  'distribution recall correlation', 'distribution precision correlation', 'distribution accuracy correlation']
 ```
 
+<!--stackedit_data:
+eyJoaXN0b3J5IjpbMTc0NDIyNzgxN119
+-->
