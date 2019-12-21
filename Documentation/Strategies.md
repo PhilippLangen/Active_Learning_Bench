@@ -25,13 +25,13 @@ More information is provided at the [repository of the authors](https://github.c
 ## Spatial Loss Sampling 
 
 Spatial loss sampling aims to map network performance to the spatial domain to select samples in regions where network performance is poor.
-wA heuristic for network performance issues at a given point is calculated as the cross entropy loss of all labelled samples weighted with their inverted squared distance to said point. 
+A heuristic for network performance issues at a given point is calculated as the cross entropy loss of all labelled samples weighted with their inverted squared distance to said point. 
 These weighting factors are also normalized to ensure points with many close neighbours do not get favored over points in less dense areas.
 
 $$
-
+w_i = \frac {1}{}
 $$
 ## Implementing New Strategies
 <!--stackedit_data:
-eyJoaXN0b3J5IjpbLTE1MTU0MzEzNl19
+eyJoaXN0b3J5IjpbMTUxMjI3NjI1NF19
 -->
